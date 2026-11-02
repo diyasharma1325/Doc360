@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Run result</h1>
+{% if error %}
+  <div class="error">
+    <strong>Error:</strong> {{ error }}
+    <p>This usually means the feature area has no articles seeded in <code>tag_map.json</code> yet.</p>
+  </div>
+{% elif not results %}
+  <p>No candidate articles were found for this feature area.</p>
+{% else %}
+  {% for r in results %}
+    <div class="card {{ r.queue_entry.status if r.queue_entry else 'no_action' }}">
+      <div class="status">{{ r.outcome }} · article {{ r.article_id }} · confidence {{ r.confidence }}</div>
+      <p>{{ r.rationale }}</p>
+      {% if r.queue_entry %}
+        <p>Queued as <strong>{{ r.queue_entry.status }}</strong> —
+           <a href="/queue">view in review queue</a></p>
+        {% if r.queue_entry.verification %}
+          {% if r.queue_entry.verification.ok %}
+            <p style="color:#1a7a4c;font-size:13px">✓ Verification passed</p>
+          {% else %}
+            {% for w in r.queue_entry.verification.warnings %}
+              <p style="color:#a3490e;font-size:13px">⚠ {{ w }}</p>
+            {% endfor %}
+          {% endif %}
+        {% endif %}
+      {% endif %}
+    </div>
+  {% endfor %}
+{% endif %}
+<p><a href="/new">&larr; Submit another change</a></p>
+{% endblock %}

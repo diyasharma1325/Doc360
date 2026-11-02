@@ -1,0 +1,12 @@
+{
+  "feature_area": "unified-content-experience",
+  "summary": "Unified content experience applies to Queues as well.",
+  "old": "Queues were not affected by the unified content experience.",
+  "new": "Queues are also now part of the content tab.",
+  "effective_date": "2026-10-28",
+  "notes": "",
+  "product_line": "",
+  "affected_content_types": [],
+  "unaffected_content_types": [],
+  "changes": []
+}

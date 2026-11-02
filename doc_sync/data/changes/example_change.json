@@ -1,0 +1,8 @@
+{
+  "feature_area": "example-feature-area",
+  "summary": "One-line description of what changed.",
+  "old": "The old label, behavior, or UI text being replaced.",
+  "new": "What it becomes.",
+  "effective_date": "2026-09-30",
+  "notes": "Anything else worth telling the agent. This file is a template — copy it, don't run it as-is."
+}

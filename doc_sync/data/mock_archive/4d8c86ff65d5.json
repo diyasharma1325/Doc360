@@ -1,0 +1,8 @@
+{
+  "id": "4d8c86ff65d5",
+  "title": "[TEST] Configuring Smart Tips, Beacons, Launchers, and Blockers (live demo)",
+  "html_content": "<p>To configure a Smart Tip, Beacon, Launcher, or Blocker, open the relevant flow and switch to the <strong>Widgets tab</strong>, which is separate from your flow's Content tab. All widget types are managed from the Widgets tab.</p>\n<img src=\"https://placehold.co/600x400?text=Widgets+Tab\" alt=\"Screenshot of the Widgets tab\" />\n<p>Once you've selected the widget type under the Widgets tab, configure its trigger conditions as usual.</p>\n",
+  "status": 3,
+  "version_number": 1,
+  "category_id": "mock-archived-category"
+}

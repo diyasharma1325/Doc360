@@ -1,0 +1,7 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+
+# Large reference media - keep local, don't bloat git history/clones
+*.mp4

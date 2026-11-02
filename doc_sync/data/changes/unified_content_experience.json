@@ -1,0 +1,12 @@
+{
+  "feature_area": "unified-content-experience",
+  "summary": "Smart Tips, Beacons, Flows, Launchers, Blockers, Links, Images, Videos, PDFs, and Articles are now configured under the Content tab. Pop-ups, Self Help, Task List, and Surveys are unaffected and remain under the Widgets tab exactly as before.",
+  "old": "Smart Tips, Beacons, Flows, Launchers, Blockers, Links, Images, Videos, PDFs, and Articles configured from a separate Widgets tab",
+  "new": "Smart Tips, Beacons, Flows, Launchers, Blockers, Links, Images, Videos, PDFs, and Articles configured from the Content tab",
+  "effective_date": "2026-10-20",
+  "notes": "Any article instructing users to open a separate Widgets tab for Smart Tips, Beacons, Flows, Launchers, Blockers, Links, Images, Videos, PDFs, or Articles is now inaccurate.",
+  "product_line": "DAP for Web",
+  "affected_content_types": ["Smart Tips", "Beacons", "Flows", "Launchers", "Blockers", "Links", "Images", "Videos", "PDFs", "Articles"],
+  "unaffected_content_types": ["Pop-ups", "Self Help", "Task List", "Surveys"],
+  "changes": []
+}

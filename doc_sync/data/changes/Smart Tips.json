@@ -1,0 +1,12 @@
+{
+  "feature_area": "Smart Tips",
+  "summary": "Data validation through smart tips now supports domain validation too.",
+  "old": "Smart tips did not support domain validation through data validation.",
+  "new": "Domains can also be validated through smart tips.",
+  "effective_date": "2026-11-03",
+  "notes": "",
+  "product_line": "",
+  "affected_content_types": [],
+  "unaffected_content_types": [],
+  "changes": []
+}

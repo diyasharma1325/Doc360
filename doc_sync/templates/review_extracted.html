@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Review extracted change note</h1>
+<p class="hint">
+  Extracted from your PRD — check everything before searching for candidates,
+  especially anything left blank below. A blank field means the PRD didn't
+  clearly state it; the model was told not to guess.
+</p>
+<form method="post" action="/new/review">
+  <input type="hidden" name="path" value="{{ path }}">
+
+  <label>Feature area</label>
+  <input name="feature_area" value="{{ note.feature_area }}" required>
+
+  <label>Summary</label>
+  <textarea name="summary" required>{{ note.summary }}</textarea>
+
+  <label>Old</label>
+  <textarea name="old" required>{{ note.old }}</textarea>
+
+  <label>New</label>
+  <textarea name="new" required>{{ note.new }}</textarea>
+
+  <label>Effective date {% if not note.effective_date %}<span class="hint" style="color:#a3490e;">— blank, PRD didn't state one</span>{% endif %}</label>
+  <input name="effective_date" type="date" value="{{ note.effective_date }}">
+
+  <label>Product line (real Document360 workspace) {% if not note.product_line %}<span class="hint" style="color:#a3490e;">— blank, model wasn't confident</span>{% endif %}</label>
+  <input name="product_line" value="{{ note.product_line }}" placeholder="e.g. DAP for Web">
+
+  <label>Affected content types <span class="hint">(one per line)</span></label>
+  <textarea name="affected_content_types" rows="4">{{ note.affected_content_types|join('\n') }}</textarea>
+
+  <label>Unaffected content types <span class="hint">(one per line — only what the PRD explicitly rules out)</span></label>
+  <textarea name="unaffected_content_types" rows="3">{{ note.unaffected_content_types|join('\n') }}</textarea>
+
+  <label>Notes</label>
+  <textarea name="notes">{{ note.notes }}</textarea>
+
+  <button type="submit">Confirm and search for candidates</button>
+</form>
+{% endblock %}

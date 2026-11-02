@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Review queue</h1>
+{% if not items %}
+  <p>Nothing waiting for review.</p>
+{% endif %}
+{% for item in items %}
+  <div class="card {{ item.status }}">
+    <div class="status">{{ item.status }} · article {{ item.article_id }} · feature {{ item.feature_area }} · confidence {{ item.confidence }}</div>
+    <p>{{ item.rationale }}</p>
+    {% if item.note %}<p>{{ item.note }}</p>{% endif %}
+    {% if item.verification %}
+      {% if item.verification.ok %}
+        <p style="color:#1a7a4c;font-size:13px">✓ Verification passed</p>
+      {% else %}
+        {% for w in item.verification.warnings %}
+          <p style="color:#a3490e;font-size:13px">⚠ {{ w }}</p>
+        {% endfor %}
+      {% endif %}
+    {% endif %}
+    <div class="btn-row">
+      <form method="post" action="/queue/{{ item.id }}/approve"><button class="approve">Approve</button></form>
+      <form method="post" action="/queue/{{ item.id }}/reject"><button class="reject">Reject</button></form>
+    </div>
+  </div>
+{% endfor %}
+{% endblock %}

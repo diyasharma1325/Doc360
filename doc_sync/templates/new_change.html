@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>New change note</h1>
+
+<h2 style="font-size:16px;margin-top:0;">From a PRD</h2>
+<p class="hint">Upload a PDF (read natively — tables and embedded images included,
+no lossy text conversion) or paste plain text below. One model call
+extracts a structured change note from it, then you'll pick which real
+articles to actually assess on the next screen.</p>
+<form method="post" action="/new/prd" enctype="multipart/form-data">
+  <label>PDF <span class="hint">(takes priority over pasted text below, if both are given)</span></label>
+  <input type="file" name="prd_file" accept=".pdf">
+
+  <label>Or paste text</label>
+  <textarea name="prd_text" rows="8" placeholder="Paste PRD text here..."></textarea>
+  <button type="submit">Extract change note</button>
+</form>
+
+<hr style="margin:32px 0;border:none;border-top:1px solid #c7d0d9;">
+
+<h2 style="font-size:16px;">Or fill in the fields by hand</h2>
+<form method="post">
+  <label>Feature area <span class="hint">(short slug — reuse an existing one below, or start a new one)</span></label>
+  <input name="feature_area" list="feature_areas" required>
+  <datalist id="feature_areas">
+    {% for fa in feature_areas %}<option value="{{ fa }}">{% endfor %}
+  </datalist>
+
+  <label>Summary <span class="hint">— one line, what changed</span></label>
+  <input name="summary" required>
+
+  <label>Old <span class="hint">— the label, behavior, or UI text being replaced</span></label>
+  <textarea name="old" required></textarea>
+
+  <label>New <span class="hint">— what it becomes</span></label>
+  <textarea name="new" required></textarea>
+
+  <label>Effective date</label>
+  <input name="effective_date" type="date" required>
+
+  <label>Notes <span class="hint">(optional)</span></label>
+  <textarea name="notes"></textarea>
+
+  <button type="submit">Save and run</button>
+</form>
+{% endblock %}
