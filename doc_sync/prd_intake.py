@@ -26,6 +26,7 @@ from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
 
+import workspaces
 from change_note import ChangeNote, ContentChange, save_change_note
 from d360_client import Document360Client
 
@@ -69,9 +70,14 @@ CHANGE_NOTE_FUNCTION = types.FunctionDeclaration(
 
 
 def _real_product_lines(client=None):
+    """The live workspace names a PRD may be routed to: the account's real
+    /ProjectVersions list, narrowed to workspaces.LIVE_WORKSPACES so a
+    change note can never be pointed at Archived or another non-live
+    workspace that discovery would then refuse."""
     client = client or Document360Client()
     versions = client.list_project_versions().get("data", [])
-    return [v.get("version_code_name") for v in versions if v.get("version_code_name")]
+    return [v.get("version_code_name") for v in versions
+            if v.get("version_code_name") and workspaces.is_live(v.get("id"))]
 
 
 def _load_prompt(product_lines):

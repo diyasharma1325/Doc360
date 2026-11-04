@@ -21,6 +21,7 @@ from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
 
+import product_context
 from assess import AssessmentError, _assessment_from_result, _build_change_note_text, _load_system_prompt
 from d360_client import Document360Client
 
@@ -55,7 +56,7 @@ def assess_article(article_id, change_note, client=None):
 
     gclient = genai.Client()  # reads GEMINI_API_KEY from the environment
     config = types.GenerateContentConfig(
-        system_instruction=_load_system_prompt(),
+        system_instruction=_load_system_prompt(product_context.product_line_of(article, change_note)),
         # The same failure kb_search.py's triage hit: thinking tokens
         # alone can exhaust a tight budget before any output is written.
         # This call needs even more headroom than that one did — a

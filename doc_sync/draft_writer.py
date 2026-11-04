@@ -5,12 +5,18 @@ creates the new draft or flags the article for manual merge instead of
 overwriting someone's in-progress work. Never calls publish() — publishing
 stays a manual step you or your team do directly in Document360.
 
-The draft-exists check reads `article["status"]` off the same response
-`d360_client.get_article()` returns. That field name, and `version_number`
-below, are carried over from d360_client.py's existing conventions
-(STATUS_MAP_ARTICLE in doc360-ia-audit/audit.py maps 0 -> draft, 3 ->
-published) but have not been confirmed against a live get_article() call
-yet — verify both before trusting this on anything real.
+The write itself is a fork: a new draft version branched off the live
+article, so the published version stays exactly as it was until someone
+publishes the draft by hand (see ArticleService.fork_and_update()).
+
+Order is the safety property: the draft-exists check runs on the article
+as read BEFORE anything is forked, and a hit stops here with nothing
+written. A fork is itself an unpublished draft, so re-running the same
+change note finds it and flags a merge instead of forking twice.
+
+The draft-exists check reads `status`, `public_version` and
+`latest_version` off get_article() — all confirmed against live
+responses on 2026-11-04 (see d360_client.get_article()).
 """
 import sys
 from pathlib import Path
@@ -23,6 +29,20 @@ import review_queue
 import verify
 
 DRAFT_STATUS = 0  # see STATUS_MAP_ARTICLE in doc360-ia-audit/audit.py
+
+
+def has_pending_draft(article):
+    """True if the article's latest version is not the published one.
+    Two independent signals, either of which flags it: `status == 0`, and
+    `latest_version > public_version`. They agreed on every live article
+    checked, so the second only ever ADDS flags — it is there so a single
+    stale or missing field can't make in-progress work look safe to fork
+    over. A mock record carrying neither version field falls back to
+    `status` alone, exactly as before."""
+    if article.get("status") == DRAFT_STATUS:
+        return True
+    latest, public = article.get("latest_version"), article.get("public_version")
+    return latest is not None and public is not None and latest > public
 
 
 def handle(article_id, change_note, assessment, client=None, service=None):
@@ -51,7 +71,7 @@ def handle(article_id, change_note, assessment, client=None, service=None):
             "note": "Model reported needs_edit=True but returned no updated_html_content — needs manual review.",
         })
 
-    if article.get("status") == DRAFT_STATUS:
+    if has_pending_draft(article):
         return review_queue.add({
             **base_entry,
             "status": "merge_conflict",
@@ -59,11 +79,10 @@ def handle(article_id, change_note, assessment, client=None, service=None):
             "note": "Article already has an unpublished draft — merge by hand instead of overwriting it.",
         })
 
-    version_number = article.get("version_number", 1)
-    service.update(
+    service.fork_and_update(
         article_id=article_id,
         content=assessment.updated_html_content,
-        version_number=version_number,
+        current=article,
     )
 
     verification = verify.verify_article(

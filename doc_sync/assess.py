@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT / "core"))  # d360_client.py lives in ../core
 
 import anthropic
 
+import product_context
 from d360_client import Document360Client
 
 MODEL = "claude-sonnet-5"
@@ -74,23 +75,17 @@ def _assessment_from_result(result, original_html_content):
     )
 
 
-def _load_system_prompt():
+def _load_system_prompt(product_line=None):
     parts = [(ROOT / "assess_prompt.md").read_text()]
     for guideline in ("document360-formatting.md", "whatfix-writing-guidelines-agent.md"):
         path = REPO_ROOT / "guidelines" / guideline  # these live in ../guidelines, not here
         if path.exists():
             parts.append(f"\n\n## {guideline}\n\n" + path.read_text())
-    # Product context (2026-11-02): scoped reference, not a general dump —
-    # dap-core.md is the shared DAP concept model across every surface,
-    # dap-web.md is only the delta specific to DAP for Web. Both live
-    # alongside this file, not at the repo root. Hardcoded to these two for
-    # now since "DAP for Web" is the only product line in play; once a
-    # second surface delta exists (dap-desktop.md etc.), this should select
-    # by change_note.product_line instead of always loading dap-web.md.
-    for product_doc in ("dap-core.md", "dap-web.md"):
-        path = ROOT / product_doc
-        if path.exists():
-            parts.append(f"\n\n## {product_doc}\n\n" + path.read_text())
+    # Product context: scoped reference, not a general dump. Selected per
+    # product line (2026-11-04) — the article's own workspace, see
+    # product_context.py. No product line means DAP for Web's two files
+    # (dap-core.md + dap-web.md), the only ones this prompt carried before.
+    parts.extend(product_context.prompt_parts(product_line))
     return "\n".join(parts)
 
 
@@ -153,7 +148,7 @@ def assess_article(article_id, change_note, client=None):
     response = ai.messages.create(
         model=MODEL,
         max_tokens=4096,
-        system=_load_system_prompt(),
+        system=_load_system_prompt(product_context.product_line_of(article, change_note)),
         tools=[ASSESS_TOOL],
         tool_choice={"type": "tool", "name": "report_assessment"},
         messages=[{"role": "user", "content": text}],

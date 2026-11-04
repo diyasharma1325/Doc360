@@ -18,6 +18,22 @@ better relevance signal than an incidental substring hit. The trade-off:
 there's no longer a zero-cost, can't-fail guarantee underneath it —
 discovery now depends entirely on this one model call being thorough.
 
+Two discovery modes (`discovery=`), "titles" being the default:
+
+- "titles": the original behavior above — every title in ONE workspace,
+  one triage call. Unchanged, prompt and all.
+- "index" (opt-in, 2026-11-04): a local full-text search of article
+  BODIES across all six live workspaces (kb_index.py) picks a shortlist,
+  balanced per workspace, and only that shortlist goes to the same
+  triage call, each entry with its workspace and the matching excerpt.
+  This is not the removed keyword floor coming back: its hits are never
+  included unconditionally, they are candidates the model still has to
+  accept. What it fixes is the floor's opposite problem — an article
+  whose TITLE doesn't name the feature was invisible to "titles" mode
+  however good the triage — and it does so with a prompt a fraction of
+  the size, even at six times the scope. Falls back to "titles" when no
+  index has been built.
+
 Read-only end to end — makes no writes, no queue entries, no draft edits.
 Uses Gemini (gemini-3.5-flash), matching the pipeline's current primary
 provider in assess_gemini.py.
@@ -35,11 +51,37 @@ from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
 
+import kb_index
+import product_context
+import workspaces
 from change_note import load_change_note
 from d360_client import Document360Client
 
 MODEL = "gemini-3.5-flash"
 PROMPT_PATH = os.path.join(os.path.dirname(__file__), "kb_search_prompt.md")
+
+DISCOVERY_MODES = ("titles", "index")
+DEFAULT_DISCOVERY = "titles"
+
+# "index" mode shortlist sizing. Searched per workspace and capped there
+# first, so DAP for Web (half the corpus) can't crowd the others out of
+# the list; then merged best-first and capped again so the triage prompt
+# stays small (~40 short entries, versus ~1,400 titles in "titles" mode).
+INDEX_PER_WORKSPACE = 12
+INDEX_SHORTLIST_MAX = 40
+INDEX_STALE_AFTER_HOURS = 48
+
+# Prepended to the triage request in "index" mode only. kb_search_prompt.md
+# describes a full title list, which a shortlist isn't — saying so here,
+# rather than editing that file, keeps "titles" mode's prompt unchanged.
+_SHORTLIST_NOTE = (
+    "Note: the list below is NOT every article. It is a shortlist chosen by a "
+    "keyword search over article bodies across several product workspaces, so "
+    "each entry also shows its workspace and the passage that matched. Keyword "
+    "matches can be incidental: select an article only if it actually documents "
+    "the feature or workflow this change note describes, judged by its title, "
+    "category and excerpt together.\n\n"
+)
 
 # Document360 splits content into entirely separate project versions
 # (workspaces) per product line — DAP for Web, DAP for Desktop, DAP on
@@ -51,7 +93,8 @@ PROMPT_PATH = os.path.join(os.path.dirname(__file__), "kb_search_prompt.md")
 # *inside* whatever workspace was configured was silently searching
 # Archived's "DAP for Web" subfolder of retired articles, never the real,
 # live DAP for Web workspace. `product_line` now resolves to the actual
-# workspace via list_project_versions() instead.
+# workspace via core/workspaces.py's allow-list of the six live product
+# workspaces, which also refuses anything outside them (Archived included).
 DEFAULT_PRODUCT_LINE = "DAP for Web"
 
 CANDIDATES_FUNCTION = types.FunctionDeclaration(
@@ -82,39 +125,43 @@ CANDIDATES_FUNCTION = types.FunctionDeclaration(
 )
 
 
-def _load_prompt():
+def _load_prompt(product_line=None, include_products=True):
     with open(PROMPT_PATH) as f:
         parts = [f.read()]
     # Product context (2026-11-02), same files and same reasoning as
-    # assess.py's _load_system_prompt(): dap-core.md is the shared DAP
-    # concept model, dap-web.md the Web-specific delta. Hardcoded to these
-    # two until a second product line's delta file exists — see assess.py
-    # for the TODO to select by product_line instead. This is a test,
-    # not a settled default: this prompt already carries every article
-    # title in the workspace (the largest prompt in the pipeline, and the
-    # one that already hit a real MAX_TOKENS failure once from size alone
-    # — see the thinking_budget note in triage() below), so adding more
-    # context here is a real cost, not a free improvement to assume works.
-    for product_doc in ("dap-core.md", "dap-web.md"):
-        path = THIS_DIR / product_doc
-        if path.exists():
-            parts.append(f"\n\n## {product_doc}\n\n" + path.read_text())
+    # assess.py's _load_system_prompt(), selected by product line since
+    # 2026-11-04 (product_context.py): "titles" mode gets the files for the
+    # one workspace it walked, so DAP for Web — the default — is unchanged.
+    # This is a test, not a settled default: this prompt already carries
+    # every article title in the workspace (the largest prompt in the
+    # pipeline, and the one that already hit a real MAX_TOKENS failure once
+    # from size alone — see the thinking_budget note in triage() below), so
+    # adding more context here is a real cost, not a free improvement to
+    # assume works.
+    #
+    # "index" mode passes include_products=False. Its shortlist spans up to
+    # six workspaces, and their reference files total ~175 KB — loading
+    # them all would put back the prompt size the shortlist exists to cut,
+    # while the shortlist's excerpts already carry the concrete text.
+    # Revisit once index mode's results have been compared with "titles".
+    if include_products:
+        parts.extend(product_context.prompt_parts(product_line))
     return "\n".join(parts)
 
 
-def _resolve_project_version_id(client, product_line):
-    """Look up a Document360 workspace's id by its display name (e.g.
-    "DAP for Web"), via the same ProjectVersions list discover.py uses.
-    Case-insensitive, whitespace-trimmed."""
-    versions = client.list_project_versions().get("data", [])
-    target = product_line.strip().lower()
-    for v in versions:
-        if (v.get("version_code_name") or "").strip().lower() == target:
-            return v["id"]
-    available = [v.get("version_code_name") for v in versions]
-    raise ValueError(
-        f"No Document360 workspace named {product_line!r}. Available workspaces: {available}"
-    )
+def _resolve_project_version_id(product_line):
+    """Look up a live Document360 workspace's id by its display name (e.g.
+    "DAP for Web"). Case-insensitive, whitespace-trimmed. Resolved against
+    workspaces.LIVE_WORKSPACES rather than the live /ProjectVersions list,
+    so a real-but-not-live workspace ("Archived") is refused by name
+    instead of being searched."""
+    version_id = workspaces.id_for_name(product_line)
+    if version_id is None:
+        raise ValueError(
+            f"{product_line!r} is not a live Document360 workspace. "
+            f"Live workspaces: {workspaces.names()}"
+        )
+    return version_id
 
 
 def fetch_kb_articles(client=None, project_version_id=None, product_line=DEFAULT_PRODUCT_LINE):
@@ -130,7 +177,8 @@ def fetch_kb_articles(client=None, project_version_id=None, product_line=DEFAULT
     if project_version_id is None:
         if not product_line:
             raise ValueError("Pass either project_version_id or product_line")
-        project_version_id = _resolve_project_version_id(client, product_line)
+        project_version_id = _resolve_project_version_id(product_line)
+    workspaces.require_live(project_version_id, "search")
     tree = client.list_categories(
         project_version_id,
         params={"excludeArticles": "false", "includeCategoryDescription": "false"},
@@ -153,13 +201,27 @@ def fetch_kb_articles(client=None, project_version_id=None, product_line=DEFAULT
     return articles
 
 
-def triage(change_note, articles):
+def _listing_line(a):
+    """`[id] title (category path)` — the "titles" mode format, byte for
+    byte. A shortlist entry from "index" mode also carries `workspace` and
+    `snippet`, which are added only when present."""
+    path = a["category_path"]
+    if a.get("workspace"):
+        path = f"{a['workspace']} > {path}"
+    line = f"- [{a['id']}] {a['title']} ({path})"
+    if a.get("snippet"):
+        line += "\n    excerpt: " + " ".join(a["snippet"].split())
+    return line
+
+
+def triage(change_note, articles, shortlist=False, product_line=None):
     """One model call: given the full article list (titles only — no
     content fetched yet), ask which are plausibly affected. Returns the
-    list of {article_id, title, reason} dicts the model reported."""
-    listing = "\n".join(
-        f"- [{a['id']}] {a['title']} ({a['category_path']})" for a in articles
-    )
+    list of {article_id, title, reason} dicts the model reported.
+    `shortlist=True` marks `articles` as an "index" mode shortlist rather
+    than a whole workspace (see _SHORTLIST_NOTE). `product_line` picks the
+    product reference files ("titles" mode only; default DAP for Web)."""
+    listing = "\n".join(_listing_line(a) for a in articles)
     note_lines = [
         "Change note:",
         f"- feature_area: {change_note.feature_area}",
@@ -188,10 +250,12 @@ def triage(change_note, articles):
             "of these): " + ", ".join(change_note.unaffected_content_types)
         )
     prompt = "\n".join(note_lines) + f"\n\nKnowledge base articles ({len(articles)} total):\n{listing}"
+    if shortlist:
+        prompt = _SHORTLIST_NOTE + prompt
 
     gclient = genai.Client()  # reads GEMINI_API_KEY from the environment
     config = types.GenerateContentConfig(
-        system_instruction=_load_prompt(),
+        system_instruction=_load_prompt(product_line, include_products=not shortlist),
         # A real KB's title listing is large (734 articles ~= 40k prompt
         # tokens in the first live test) and this model spends thousands
         # of tokens "thinking" before answering — left at the assess.py
@@ -244,15 +308,89 @@ def triage(change_note, articles):
     return list(dict(function_call.args).get("candidates", []))
 
 
+def _index_query(change_note):
+    """The text "index" mode searches with: what the articles that are now
+    WRONG would say. So the feature area, summary, the old wording (per
+    content type when the note has a `changes` list) and the author's
+    affected-content-types list. Deliberately left out: `new` (a stale
+    article doesn't contain the new wording yet), and `notes` plus
+    `unaffected_content_types` — exclusion language like "Pop-ups did NOT
+    move" is exactly what once mined wrong keywords into discovery."""
+    parts = [change_note.feature_area, change_note.summary]
+    if change_note.changes:
+        for c in change_note.changes:
+            parts.extend([c.content_type, c.old])
+    else:
+        parts.append(change_note.old)
+    parts.extend(change_note.affected_content_types or [])
+    return " ".join(p for p in parts if p)
+
+
+def index_available(db_path=kb_index.DEFAULT_DB_PATH):
+    st = kb_index.status(db_path)
+    return st.get("exists", False) and "error" not in st
+
+
+def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAULT_DB_PATH):
+    """"index" mode: full-text search across all six live workspaces (or
+    just `workspace`, by display name), balanced per workspace, then one
+    triage call over the shortlist. Same return shape as
+    find_candidates_live(): (article_ids, candidate_records, shortlist)."""
+    if workspace and workspaces.id_for_name(workspace) is None:
+        raise ValueError(f"{workspace!r} is not a live Document360 workspace. Live workspaces: {workspaces.names()}")
+    st = kb_index.status(db_path)
+    if st.get("age_hours", 0) > INDEX_STALE_AFTER_HOURS:
+        print(f"    (knowledge index is {st['age_hours']:.0f}h old, built {st['built_at']}; "
+              f"rebuild with: python3 doc_sync/kb_index.py build)")
+
+    query = _index_query(change_note)
+    hits = []
+    for name in ([workspace] if workspace else workspaces.names()):
+        hits.extend(kb_index.search(query, k=INDEX_PER_WORKSPACE, workspace=name, db_path=db_path))
+    hits.sort(key=lambda h: h["score"])  # bm25: lower is better, comparable across workspaces (one index)
+    shortlist = [{
+        "id": h["article_id"],
+        "title": h["title"],
+        "category_path": h["category_path"],
+        "workspace": h["workspace"],
+        "version_id": h["version_id"],
+        "snippet": h["snippet"],
+    } for h in hits[:INDEX_SHORTLIST_MAX]]
+    if not shortlist:
+        return [], [], []
+
+    found = triage(change_note, shortlist, shortlist=True)
+    # The model may only pick from what it was shown: an id outside the
+    # shortlist is a hallucination or a typo, never a real candidate.
+    shown = {a["id"] for a in shortlist}
+    kept = [c for c in found if c.get("article_id") in shown]
+    if len(kept) < len(found):
+        print(f"    (dropped {len(found) - len(kept)} candidate(s) whose id wasn't in the shortlist)")
+    return [c["article_id"] for c in kept], kept, shortlist
+
+
 def find_candidates_live(change_note, client=None, project_version_id=None,
-                          product_line=DEFAULT_PRODUCT_LINE):
-    """Discovery entry point used by pipeline.py's automatic KB fallback:
-    walk the real `product_line` workspace, then semantically triage it
-    (one model call — see module docstring for why this is the only
-    discovery pass now). Returns
-    (article_ids, full_candidate_records, all_articles_scanned)."""
+                          product_line=DEFAULT_PRODUCT_LINE, discovery=DEFAULT_DISCOVERY,
+                          index_workspace=None):
+    """Discovery entry point used by pipeline.py's automatic KB fallback.
+    Returns (article_ids, full_candidate_records, all_articles_scanned).
+
+    discovery="titles": walk the real `product_line` workspace, then
+    semantically triage it (one model call — see the module docstring).
+    discovery="index": search all six live workspaces' bodies locally
+    (`index_workspace` narrows to one) and triage the shortlist; falls
+    back to "titles" when no index has been built. `product_line` only
+    applies to "titles" mode — in "index" mode an unset narrowing means
+    every live workspace, not the default one."""
+    if discovery not in DISCOVERY_MODES:
+        raise ValueError(f"discovery must be one of {DISCOVERY_MODES}, got {discovery!r}")
+    if discovery == "index":
+        if index_available():
+            return find_candidates_indexed(change_note, workspace=index_workspace)
+        print("    (no knowledge index built yet — falling back to title-only discovery; "
+              "build one with: python3 doc_sync/kb_index.py build)")
     articles = fetch_kb_articles(client, project_version_id, product_line=product_line)
-    found = triage(change_note, articles)
+    found = triage(change_note, articles, product_line=product_line)
     return [c["article_id"] for c in found], found, articles
 
 
@@ -261,25 +399,39 @@ def main():
         description="Test run: search the real Document360 KB for articles affected by a change note. Read-only, makes no writes."
     )
     parser.add_argument("change_note_path")
-    parser.add_argument("--product-line", default=DEFAULT_PRODUCT_LINE,
-                         help=f"The real Document360 workspace to search, by display name "
-                              f"(default: {DEFAULT_PRODUCT_LINE!r}). Each product line is a "
-                              f"fully separate workspace with its own article set.")
+    parser.add_argument("--product-line", default=None,
+                         help=f"The real Document360 workspace to search, by display name. "
+                              f"'titles' mode: the one workspace walked (default: "
+                              f"{DEFAULT_PRODUCT_LINE!r}). 'index' mode: narrows the search to this "
+                              f"workspace (default: all six live workspaces).")
+    parser.add_argument("--discovery", choices=DISCOVERY_MODES, default=DEFAULT_DISCOVERY,
+                         help="'titles' (default): triage every title in one workspace. 'index': "
+                              "search article bodies across all six live workspaces with the local "
+                              "knowledge index, then triage that shortlist.")
     args = parser.parse_args()
-    product_line = args.product_line
 
     change_note = load_change_note(args.change_note_path)
 
-    print(f"Walking the real Document360 {product_line!r} workspace (read-only)...")
     t0 = time.time()
-    articles = fetch_kb_articles(product_line=product_line)
-    t1 = time.time()
-    print(f"  {len(articles)} article(s) found in {t1 - t0:.1f}s.")
+    if args.discovery == "index" and index_available():
+        scope = args.product_line or "all six live workspaces"
+        print(f"Searching the local knowledge index ({scope}), then triaging the shortlist...")
+        _, found, scanned = find_candidates_indexed(change_note, workspace=args.product_line)
+        print(f"  Shortlisted {len(scanned)} article(s). Total: {time.time() - t0:.1f}s.\n")
+    else:
+        if args.discovery == "index":
+            print("No knowledge index built yet — falling back to title-only discovery "
+                  "(build one with: python3 doc_sync/kb_index.py build).")
+        product_line = args.product_line or DEFAULT_PRODUCT_LINE
+        print(f"Walking the real Document360 {product_line!r} workspace (read-only)...")
+        articles = fetch_kb_articles(product_line=product_line)
+        t1 = time.time()
+        print(f"  {len(articles)} article(s) found in {t1 - t0:.1f}s.")
 
-    print("Running semantic triage against the change note...")
-    found = triage(change_note, articles)
-    t2 = time.time()
-    print(f"  Triage took {t2 - t1:.1f}s. Total: {t2 - t0:.1f}s.\n")
+        print("Running semantic triage against the change note...")
+        found = triage(change_note, articles, product_line=product_line)
+        t2 = time.time()
+        print(f"  Triage took {t2 - t1:.1f}s. Total: {t2 - t0:.1f}s.\n")
 
     if not found:
         print("No candidate articles found.")

@@ -5,3 +5,7 @@ __pycache__/
 
 # Large reference media - keep local, don't bloat git history/clones
 *.mp4
+
+# Local knowledge index built by doc_sync/kb_index.py - rebuildable, never committed
+doc_sync/data/knowledge.db
+doc_sync/data/knowledge.db.building

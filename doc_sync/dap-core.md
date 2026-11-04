@@ -9,15 +9,15 @@
 > Distilled from the **published** DAP documentation, **verified against the live Document360
 > `studio` (DAP Web) workspace on 2026-09-25** (Release Notes and
 > Contact Support excluded). Concepts only — for exact procedure steps, follow the `Source:` link,
-> which is also a valid **cross-link** target. The Content Map below is the CURRENT published IA;
-> fit new articles into it and don't duplicate an existing title. Core authoring is covered in
+> which is also a valid **cross-link** target. The Content Map below is a snapshot of the published
+> IA when this file was written; use it to see where a feature is documented. Core authoring is covered in
 > depth; peripheral areas (deployment, integrations, analytics, translations) are covered as
-> overviews (retrieval has their detail). FAQs and troubleshooting are folded/summarized, not
+> overviews (the published articles have their detail). FAQs and troubleshooting are folded/summarized, not
 > enumerated. Archived/deprecated/unpublished docs are excluded.
 
 ## Table of Contents
 
-- **[DAP Content Map (current published IA)](#dap-content-map-current-published-ia)**
+- **[DAP Content Map (published IA snapshot)](#dap-content-map-published-ia-snapshot)**
 - **[Overview](#overview)** — What is Whatfix, where used, content umbrella, Studio, Dashboard, CLM stages, Workflow, Roles
 - **[Cross-Cutting Rules & Feature Relationships](#cross-cutting-rules--feature-relationships)** — CLM staging, roles, Beta gating, dependencies, when-to-use
 - **[Content Types (the DAP primitives)](#content-types-the-dap-primitives)** — Flows, Smart Tips, Beacons, Pop-ups, Launchers, Cues, Surveys, Task List, Blocker, Static Content
@@ -33,13 +33,13 @@
 
 ---
 
-## DAP Content Map (current published IA)
+## DAP Content Map (published IA snapshot)
 
-> The live Document360 category structure and published article inventory for the `studio`
-> workspace (1363 published articles), derived from the Tier-2 index at read time. Use as the IA
-> baseline: fit new articles into this structure, don't duplicate an existing title, and place
-> enhancements in the right category. Every published category is listed, including Release Notes
-> and Contact Support.
+> A snapshot of the Document360 category structure and published article inventory for the `studio`
+> workspace (1363 published articles when it was taken). Use it to see where a feature is documented
+> and which categories are likely to hold articles a change affects. It is not refreshed
+> automatically, so the live workspace may have moved on since; the knowledge index (kb_index.py) is
+> the up-to-date source for what is published now.
 
 - **Whatfix Web Overview** (11)
 - **Whatfix Administration** (33) - 2 directly here
@@ -572,7 +572,7 @@ deeper reasoning is now built in, so there is no separate Deep think toggle). Th
 
 ## Authoring Lifecycle (overviews)
 
-> Peripheral to core authoring — covered as overviews; retrieval has the detailed steps.
+> Peripheral to core authoring — covered as overviews; the published articles have the detailed steps.
 
 ### Translations & Multi-language
 

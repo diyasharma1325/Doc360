@@ -13,11 +13,21 @@ logic, not a confirmed fact about how the real Document360 API behaves:
 - update() on a published article flips its status back to "draft" and
   bumps version_number — simulating the "editing creates a pending draft
   layer" behavior draft_writer.py's safety check is designed around.
+- fork_and_update() models the live draft write: the published version
+  stays as `public_version`, the edit lands in a new `latest_version`,
+  and status becomes draft. Same fields, same meaning as the real API's
+  get_article() (confirmed live 2026-11-04), so draft_writer.py's
+  has_pending_draft() reads a mock record exactly as it reads a real one.
 """
 import argparse
 import json
 import os
+import sys
 import uuid
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core"))  # workspaces.py lives in ../core
+
+import workspaces
 
 STATUS_DRAFT = 0
 STATUS_PUBLISHED = 3
@@ -69,12 +79,17 @@ def seed_from_real(article_id, real_article):
         "version_number": real_article.get("version_number", 1),
         "category_id": real_article.get("category_id", "mirrored-from-real"),
     }
+    # Carried over only when the real record has them, so a mirrored
+    # article is draft-checked and workspace-checked like the real one.
+    for key in ("public_version", "latest_version", "project_version_id"):
+        if real_article.get(key) is not None:
+            record[key] = real_article[key]
     return _save(record)
 
 
 class MockArticleService:
     """Same surface as articles.ArticleService that this pipeline calls —
-    create(), update(), publish()."""
+    create(), update(), fork_and_update(), publish()."""
 
     def create(self, title, content, category_id=None, order=0, publish=False,
                publish_message="Initial publish"):
@@ -103,6 +118,27 @@ class MockArticleService:
         record["status"] = STATUS_DRAFT  # editing a published article creates a pending draft layer
         _save(record)
         return {"data": record}
+
+    def fork_and_update(self, article_id, content, current=None, lang_code="en"):
+        """Same surface as ArticleService.fork_and_update(). Applies the same
+        workspace check when the record carries a `project_version_id` (a
+        mirrored real article); hand-made mock fixtures have none and are
+        not workspace-scoped."""
+        record = _load(article_id)
+        if record.get("project_version_id") is not None:
+            workspaces.require_live(record["project_version_id"], "write a draft into")
+        base_version = record.get("version_number", 1)
+        if "public_version" not in record:
+            record["public_version"] = base_version if record.get("status") == STATUS_PUBLISHED else 0
+        new_version = base_version + 1
+        record.update({
+            "html_content": content,
+            "version_number": new_version,
+            "latest_version": new_version,
+            "status": STATUS_DRAFT,
+        })
+        _save(record)
+        return {"data": {"id": article_id, "version_number": new_version}}
 
     def publish(self, article_id, version_number, message="Publishing via API"):
         record = _load(article_id)
