@@ -195,8 +195,16 @@ and every proposed edit as a word-level diff of the article's visible
 text. Whatever hasn't happened yet is simply left out, so the page can be
 rebuilt and republished to the same link as the run goes on.
 
-Still to come: a `doc-sync` skill that drives the whole run, and removing
-the web app.
+**The `doc-sync` skill** (`.claude/skills/doc-sync/SKILL.md`) drives a whole
+run from Claude Code, the way the I2P backtest skill does: it asks the writer
+for the ticket (never guessing a missing input), runs each step above, shows
+the plan exactly as recorded and asks for approval by number or a revision,
+asks before any Archived write after naming every target, runs phase 2, and
+builds and publishes the artifact. In Claude Code, ask to "run doc sync on a
+ticket" or type `/doc-sync`. The skill only runs commands; it never edits the
+pipeline code.
+
+Still to come: removing the web app.
 
 ## Before your first run
 

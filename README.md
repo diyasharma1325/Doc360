@@ -16,6 +16,7 @@ how the pieces fit together.
 | Path | What it is |
 |---|---|
 | [`doc_sync/`](doc_sync/README.md) | The pipeline itself: change notes in, candidate discovery (title triage, or a local full-text index across all six live workspaces), LLM assessment, fork-then-write draft writes with safety checks, review queue. Start here. |
+| `.claude/skills/doc-sync/` | The `doc-sync` Claude Code skill: drives a Doc Sync run from a simulated Jira ticket to drafts and a published Jira-style artifact. Type `/doc-sync` in Claude Code. |
 | `core/` | Shared Document360 API client (`d360_client.py`), the live-workspace allow-list every discovery read and live draft write is checked against (`workspaces.py`), and manual article tools (`articles.py`, `cli.py`, `discover.py`) used both by `doc_sync/` and for one-off manual testing against the real API. |
 | `guidelines/` | House writing-style and HTML-formatting references (`document360-formatting.md`, `whatfix-writing-guidelines-agent.md`) that the pipeline's assessment step reads on every run, so drafts come out in-house-style by construction. |
 | `drafts/` | Hand-authored or manually repaired article HTML, outside the pipeline. |
