@@ -95,7 +95,7 @@ python3 doc_sync/ticket.py new dap-display-names --assignee "Your Name" \
     --summary "Display Name for Whatfix content" \
     --description-file desc.txt --attach "Product Note.pdf"
 python3 doc_sync/ticket_run.py intake  dap-display-names              # To Do -> In Draft
-python3 doc_sync/ticket_run.py phase1  dap-display-names [--discovery index]   # In Draft -> Peer review + plan
+python3 doc_sync/ticket_run.py phase1  dap-display-names [--discovery both]    # In Draft -> Peer review + plan
 python3 doc_sync/ticket_run.py replan  dap-display-names "Drop 2; also check Task List articles"
 python3 doc_sync/ticket_run.py approve dap-display-names "1, 3-5"       # Peer review -> For review
 python3 doc_sync/ticket_run.py show    dap-display-names               # status, plan, approval
@@ -122,7 +122,9 @@ Do with a comment, so it can always be retried.
 
 **Phase 1: the candidate plan** (`ticket_run.py`). Discovery runs on the
 change note within the ticket's product lines (see "Discovery scope"
-below) and the result is recorded as a numbered **candidate plan**
+below), in **index** mode by default on ticket runs (decided 2026-11-07;
+`--discovery both` adds a strict title check, `--discovery titles` is
+title-only), and the result is recorded as a numbered **candidate plan**
 comment, moving the ticket In Draft -> Peer review. The plan is saved as
 `plan.json`. `tag_map.json` is not used on ticket runs: its ids are mock
 fixtures, not live articles. A failed phase 1 records a "plan failed"
@@ -211,7 +213,27 @@ and a merged listing would go past what has been tested. Measured on
 101 candidates. Index mode on the same ticket: 24 shortlisted, one call,
 ~$0.13, 12 candidates. Titles sees only titles, so for a broad feature it
 over-includes by design; the candidate approval step is where that list
-gets cut.
+gets cut. That comparison is why **ticket runs default to index mode**
+(`pipeline.py run` and `kb_search.py` still default to titles).
+
+**`--discovery both`** (2026-11-07) runs the two together: the index pass
+as usual, plus an independent title pass per workspace, run as a strict
+recall check on Haiku (`claude-haiku-5-5`) to catch articles whose title
+describes the feature in other words but whose text didn't match. The
+title pass is not told what the index found, so the two are independent,
+and each candidate gets a `found_by`: **both** (listed first: two methods
+agree), **index**, or **titles** (listed last; a quick look decides). The
+plan comment shows it as a "Found by" column. Measured 2026-11-07:
+
+| Ticket | both / index only / titles only | Cost |
+|---|---|---|
+| Display Names, Web + Desktop (broad change) | 8 / 4 / 67 | ~$0.17 |
+| Smart Tips domain validation, Web + Mobile (narrow) | 1 / 2 / 1 | ~$0.23 |
+
+The title check stays strict on a narrow change and finds genuine gaps on a
+broad one (e.g. "Create an Article", "Flow Automation" for Display Names,
+both surfaces the product note names). With no knowledge index built,
+`both` runs as titles only.
 
 `review approve`/`reject` only updates the queue's own record — it does
 not call Document360 again. Publishing a written draft, and discarding a

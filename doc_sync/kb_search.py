@@ -62,8 +62,23 @@ GEMINI_MODEL = "gemini-3.5-flash"
 TRIAGE_MAX_OUTPUT_TOKENS = 16384
 PROMPT_PATH = os.path.join(os.path.dirname(__file__), "kb_search_prompt.md")
 
-DISCOVERY_MODES = ("titles", "index")
-DEFAULT_DISCOVERY = "titles"
+DISCOVERY_MODES = ("titles", "index", "both")
+DEFAULT_DISCOVERY = "titles"  # pipeline.py / this CLI; ticket runs default to "index" (ticket_run.py)
+
+# "both" mode (2026-11-07): the index pass, plus an independent title pass
+# per workspace run as a strict recall check on a cheaper model. Sorting
+# titles is a simple job, and the title listing is the biggest prompt in the
+# pipeline (~120k tokens for DAP for Web), so it runs on Haiku.
+TITLE_CHECK_MODEL = "claude-haiku-5-5"
+_TITLE_CHECK_NOTE = (
+    "This is a title-only RECALL CHECK, run alongside a separate full-text search of "
+    "article bodies that already finds articles mentioning this change anywhere in their "
+    "text. Your job is to catch the articles that search can miss: ones whose title "
+    "describes the feature, or a workflow this change alters, in different words. Be "
+    "strict: select an article only if its title, with its category, clearly indicates it "
+    "documents that feature or workflow. This overrides the general advice to include "
+    "borderline articles; an incidental word overlap is not enough.\n\n"
+)
 
 # "index" mode shortlist sizing. Searched per workspace and capped there
 # first, so DAP for Web (half the corpus) can't crowd the others out of
@@ -263,7 +278,8 @@ def _revision_block(revision):
 
 
 def triage(change_note, articles, shortlist=False, product_lines=None, include_products=True,
-           provider=claude_call.DEFAULT_PROVIDER, label="triage", revision=None):
+           provider=claude_call.DEFAULT_PROVIDER, label="triage", revision=None, title_check=False,
+           model=None):
     """One model call: given the full article list (titles only — no
     content fetched yet), ask which are plausibly affected. Returns the
     list of {article_id, title, reason} dicts the model reported.
@@ -273,7 +289,10 @@ def triage(change_note, articles, shortlist=False, product_lines=None, include_p
     leaves them out. `provider` is "claude" (default, claude -p) or
     "gemini" (fallback); both get the same system prompt, request and
     schema. `label` names the call in the token report. `revision` adds
-    the writer's feedback on an earlier plan (see _revision_block)."""
+    the writer's feedback on an earlier plan (see _revision_block).
+    `title_check=True` marks it as "both" mode's strict title recall check
+    (_TITLE_CHECK_NOTE). `model` overrides the Claude model (ignored for
+    Gemini)."""
     listing = "\n".join(_listing_line(a) for a in articles)
     note_lines = [
         "Change note:",
@@ -306,12 +325,14 @@ def triage(change_note, articles, shortlist=False, product_lines=None, include_p
               + f"\n\nKnowledge base articles ({len(articles)} total):\n{listing}")
     if shortlist:
         prompt = _SHORTLIST_NOTE + prompt
+    if title_check:
+        prompt = _TITLE_CHECK_NOTE + prompt
     system = _load_prompt(product_lines, include_products=include_products)
 
     if provider == "claude":
         result = claude_call.generate(
             system=system, user=prompt, schema=CANDIDATES_SCHEMA, label=label,
-            max_tokens=TRIAGE_MAX_OUTPUT_TOKENS,
+            model=model or claude_call.DEFAULT_MODEL, max_tokens=TRIAGE_MAX_OUTPUT_TOKENS,
         )
         return list(result.get("candidates", []))
     if provider != "gemini":
@@ -510,7 +531,7 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
 
 
 def find_candidates_titles(change_note, scope, client=None, provider=claude_call.DEFAULT_PROVIDER,
-                           revision=None):
+                           revision=None, title_check=False, model=None):
     """"titles" mode: for EACH workspace in `scope`, walk its full title
     list and triage it in its own call, with that workspace's product
     reference files. One call per workspace, not one merged listing: DAP
@@ -525,9 +546,10 @@ def find_candidates_titles(change_note, scope, client=None, provider=claude_call
         for a in articles:
             a["workspace"] = name
         print(f"    ({name}: {len(articles)} article title(s) to triage)", flush=True)
-        label = "triage" if len(scope) == 1 else f"triage {name}"
+        label = ("title check" if title_check else "triage") + ("" if len(scope) == 1 else f" {name}")
         picked = _only_shown(triage(change_note, articles, product_lines=[name], provider=provider,
-                                    label=label, revision=revision), articles)
+                                    label=label, revision=revision, title_check=title_check,
+                                    model=model), articles)
         found.extend(_with_workspace(picked, articles))
         all_articles.extend(articles)
     return [c["article_id"] for c in found], found, all_articles
@@ -552,6 +574,37 @@ def _with_workspace(found, shown_articles):
     return [{**c, "workspace": workspace_of.get(c["article_id"])} for c in found]
 
 
+FOUND_BY_ORDER = {"both": 0, "index": 1, "titles": 2}
+
+
+def find_candidates_both(change_note, product_lines=None, client=None, provider=claude_call.DEFAULT_PROVIDER,
+                         revision=None):
+    """"both" mode: the index pass (bodies, Sonnet) and an INDEPENDENT title
+    pass per workspace (titles only, strict, TITLE_CHECK_MODEL), merged.
+    Each candidate gets `found_by`: "both" when the two passes agree, else
+    "index" or "titles". Agreement is the strongest signal, so "both" comes
+    first, then "index", then "titles"; within each, the order the passes
+    returned them. The title pass is not told what the index pass found,
+    so "both" really is two methods agreeing. Returns (article_ids,
+    candidate_records, scanned), with scanned = shortlist + every title."""
+    _, index_found, shortlist = find_candidates_indexed(
+        change_note, scope=resolve_scope(change_note, product_lines, "index"), provider=provider, revision=revision,
+    )
+    _, title_found, titles = find_candidates_titles(
+        change_note, resolve_scope(change_note, product_lines, "titles"), client=client, provider=provider,
+        revision=revision, title_check=True, model=TITLE_CHECK_MODEL,
+    )
+    title_ids = {c["article_id"] for c in title_found}
+    index_ids = {c["article_id"] for c in index_found}
+    merged = [{**c, "found_by": "both" if c["article_id"] in title_ids else "index"} for c in index_found]
+    merged += [{**c, "found_by": "titles"} for c in title_found if c["article_id"] not in index_ids]
+    merged.sort(key=lambda c: FOUND_BY_ORDER[c["found_by"]])  # stable: keeps each pass's own order
+    counts = {k: sum(1 for c in merged if c["found_by"] == k) for k in FOUND_BY_ORDER}
+    print(f"    (both: {counts['both']} found by both passes, {counts['index']} by the index only, "
+          f"{counts['titles']} by the title check only)")
+    return [c["article_id"] for c in merged], merged, shortlist + titles
+
+
 def find_candidates_live(change_note, client=None, product_lines=None, discovery=DEFAULT_DISCOVERY,
                          provider=claude_call.DEFAULT_PROVIDER, revision=None):
     """Discovery entry point used by pipeline.py's automatic KB fallback.
@@ -565,11 +618,19 @@ def find_candidates_live(change_note, client=None, product_lines=None, discovery
     discovery="titles": each workspace in scope walked and triaged in its
     own call. discovery="index": the local knowledge index searched within
     scope, then one triage call over the shortlist; falls back to "titles"
-    when no index has been built. `provider` picks the triage model:
+    when no index has been built. discovery="both": both, merged, each
+    candidate marked `found_by` (see find_candidates_both); falls back to
+    "titles" with no index. `provider` picks the triage model:
     "claude" (default) or "gemini". `revision` carries a writer's feedback
     on an earlier plan into the triage call (re-plan)."""
     if discovery not in DISCOVERY_MODES:
         raise ValueError(f"discovery must be one of {DISCOVERY_MODES}, got {discovery!r}")
+    if discovery == "both":
+        if index_available():
+            return find_candidates_both(change_note, product_lines, client=client, provider=provider,
+                                        revision=revision)
+        print("    (no knowledge index built yet — 'both' runs as title-only discovery; "
+              "build one with: python3 doc_sync/kb_index.py build)")
     if discovery == "index":
         if index_available():
             return find_candidates_indexed(change_note, scope=resolve_scope(change_note, product_lines, "index"),
@@ -599,7 +660,8 @@ def main():
     parser.add_argument("--discovery", choices=DISCOVERY_MODES, default=DEFAULT_DISCOVERY,
                          help="'titles' (default): triage every title in each workspace in scope, one "
                               "call per workspace. 'index': search article bodies in scope with the "
-                              "local knowledge index, then triage that shortlist.")
+                              "local knowledge index, then triage that shortlist. 'both': index plus "
+                              "a strict title check on Haiku, merged with found_by.")
     parser.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER,
                          help="Model for the triage call: 'claude' (default, claude -p on your Claude "
                               "Code login) or 'gemini' (fallback, needs GEMINI_API_KEY).")
@@ -623,7 +685,8 @@ def main():
 
     print(f"{len(found)} candidate article(s):")
     for c in found:
-        print(f"  [{c['article_id']}] {c['title']}  ({c.get('workspace') or '?'})")
+        by = f", found by {c['found_by']}" if c.get("found_by") else ""
+        print(f"  [{c['article_id']}] {c['title']}  ({c.get('workspace') or '?'}{by})")
         print(f"      {c['reason']}")
 
 

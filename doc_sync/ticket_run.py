@@ -3,7 +3,7 @@
 the existing articles a change has made wrong.
 
     python3 doc_sync/ticket_run.py intake  <run> [--provider gemini]        # To Do -> In Draft
-    python3 doc_sync/ticket_run.py phase1  <run> [--discovery index]        # In Draft -> Peer review + plan
+    python3 doc_sync/ticket_run.py phase1  <run> [--discovery both]         # In Draft -> Peer review + plan
     python3 doc_sync/ticket_run.py replan  <run> "<feedback>" [--product-lines ...]
     python3 doc_sync/ticket_run.py approve <run> "1, 3, 5-7" | all          # Peer review -> For review
     python3 doc_sync/ticket_run.py show    <run>
@@ -83,7 +83,11 @@ def plan_comment(tk, note, plan, revised=False):
     writer approves by number."""
     cands = plan["candidates"]
     scope = ", ".join(plan["scope"])
-    how = f"{plan['discovery']} search of {plan['scanned']:,} article(s) in {scope}"
+    both = plan["discovery"] == "both"
+    if both:
+        how = f"a full-text search plus a title check, {plan['scanned']:,} listing(s) in {scope}"
+    else:
+        how = f"{plan['discovery']} search of {plan['scanned']:,} article(s) in {scope}"
     head = "Here's the revised candidate plan" if revised else "Here's the candidate plan"
     lines = [f"{head} for **{tk['key']}**.", "", f"**Change:** {note.summary}", ""]
     if not cands:
@@ -98,11 +102,26 @@ def plan_comment(tk, note, plan, revised=False):
         f"These **{len(cands)} article(s)** may be out of date ({how}). Each one you approve gets "
         "a full read against the change, and an edited draft if it needs one.",
         "",
-        "| # | Article | Workspace | Why it may be affected |",
-        "|---|---|---|---|",
     ]
-    for c in cands:
-        lines.append(f"| {c['n']} | {_cell(c['title'])} | {_cell(c.get('workspace'))} | {_cell(c.get('reason'))} |")
+    if both:
+        lines += [
+            "**Found by** says which search found each article: **both** (strongest: two separate "
+            "methods agree), **index** (its text mentions the change), or **titles** (its title "
+            "suggests it, but its text didn't match; worth a quick look).",
+            "",
+            "| # | Article | Workspace | Found by | Why it may be affected |",
+            "|---|---|---|---|---|",
+        ]
+        for c in cands:
+            lines.append(f"| {c['n']} | {_cell(c['title'])} | {_cell(c.get('workspace'))} | "
+                         f"{_cell(c.get('found_by'))} | {_cell(c.get('reason'))} |")
+    else:
+        lines += [
+            "| # | Article | Workspace | Why it may be affected |",
+            "|---|---|---|---|",
+        ]
+        for c in cands:
+            lines.append(f"| {c['n']} | {_cell(c['title'])} | {_cell(c.get('workspace'))} | {_cell(c.get('reason'))} |")
     lines += [
         "",
         "**Next step:** approve the articles to assess by number, for example `1, 3, 5-7`, or "
@@ -130,7 +149,8 @@ def _discover(run, note, discovery, provider, scope_override, revision=None):
         "scanned": len(scanned),
         "candidates": [
             {"n": i, "article_id": c["article_id"], "title": c.get("title", ""),
-             "workspace": c.get("workspace"), "reason": c.get("reason", "")}
+             "workspace": c.get("workspace"), "reason": c.get("reason", ""),
+             **({"found_by": c["found_by"]} if c.get("found_by") else {})}
             for i, c in enumerate(found, 1)
         ],
     }
@@ -140,7 +160,13 @@ def _discover(run, note, discovery, provider, scope_override, revision=None):
 
 # --- the steps -----------------------------------------------------------------
 
-def run_phase1(run, discovery=kb_search.DEFAULT_DISCOVERY, provider=claude_call.DEFAULT_PROVIDER,
+# Ticket runs search article bodies by default (2026-11-07): on the Display
+# Names ticket, index found 12-14 focused candidates for ~$0.13 where titles
+# found 101 for ~$0.82. "both" adds a strict title check for thoroughness.
+TICKET_DISCOVERY = "index"
+
+
+def run_phase1(run, discovery=TICKET_DISCOVERY, provider=claude_call.DEFAULT_PROVIDER,
                product_lines=None):
     """In Draft -> Peer review, with the candidate plan as a comment."""
     rd = ticket.run_dir(run)
@@ -259,7 +285,8 @@ def show(run):
         picked = set((approved or {}).get("numbers") or [])
         for c in plan["candidates"]:
             mark = "*" if c["n"] in picked else " "
-            print(f"  {mark}{c['n']:>3}. {c['title']}  ({c.get('workspace')})")
+            by = f", {c['found_by']}" if c.get("found_by") else ""
+            print(f"  {mark}{c['n']:>3}. {c['title']}  ({c.get('workspace')}{by})")
     if approved:
         print(f"Approved: {approved['numbers']}  (* above)")
 
@@ -274,7 +301,9 @@ def main():
 
     p = sub.add_parser("phase1", help="In Draft -> Peer review: find candidates, record the plan")
     p.add_argument("run")
-    p.add_argument("--discovery", choices=kb_search.DISCOVERY_MODES, default=kb_search.DEFAULT_DISCOVERY)
+    p.add_argument("--discovery", choices=kb_search.DISCOVERY_MODES, default=TICKET_DISCOVERY,
+                   help="'index' (default): search article bodies. 'both': index plus a strict title "
+                        "check, merged with a Found by column. 'titles': every title only.")
     p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER)
     p.add_argument("--product-lines", default=None, help="Override the ticket's product lines (comma-separated)")
 

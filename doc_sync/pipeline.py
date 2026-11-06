@@ -89,13 +89,13 @@ def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, pro
             # intake) beats the mode's default — DAP for Web for "titles",
             # all six for "index". The same rule for both modes: the
             # workspaces the writer named are the ones searched.
-            indexed = discovery == "index" and kb_search.index_available()
-            scope = kb_search.resolve_scope(change_note, product_lines, "index" if indexed else "titles")
+            mode = discovery if (discovery == "titles" or kb_search.index_available()) else "titles"
+            scope = kb_search.resolve_scope(change_note, product_lines, "titles" if mode == "titles" else "index")
             article_ids, found, scanned = kb_search.find_candidates_live(
                 change_note, product_lines=product_lines, discovery=discovery, provider=provider,
             )
             print(f"No tag_map entry for feature_area={change_note.feature_area!r} — ran a live KB "
-                  f"search ({'index' if indexed else 'titles'}) in {', '.join(scope)}: scanned "
+                  f"search ({mode}) in {', '.join(scope)}: scanned "
                   f"{len(scanned)} real article(s), found {len(article_ids)} candidate(s):")
             for c in found:
                 print(f"    [{c['article_id']}] {c['title']} ({c.get('workspace') or '?'}) — {c['reason']}")
@@ -214,12 +214,13 @@ def main():
                              "the change note's product lines (a ticket run always has them), else "
                              "'DAP for Web' for --discovery titles and all six for --discovery index. "
                              "Ignored when tag_map already has a match.")
-    run_p.add_argument("--discovery", choices=["titles", "index"], default="titles",
+    run_p.add_argument("--discovery", choices=["titles", "index", "both"], default="titles",
                         help="How the live KB search finds candidates when tag_map has no entry. "
                              "'titles' (default): triage every title in each workspace in scope, one "
                              "call per workspace. 'index': search article bodies in scope with the "
                              "local knowledge index (python3 doc_sync/kb_index.py build), then triage "
-                             "that shortlist; falls back to 'titles' if no index is built.")
+                             "that shortlist; falls back to 'titles' if no index is built. 'both': "
+                             "index plus a strict title check on Haiku, merged (found_by).")
     run_p.add_argument("--only", default=None,
                         help="Comma-separated article ids — assess only these from the discovered "
                              "candidates, skipping the rest. For quota-limited live demos.")
