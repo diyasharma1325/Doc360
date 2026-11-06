@@ -15,7 +15,10 @@ fallback, then DAP for Web — which is exactly what every prompt loaded
 before this module existed, so a call that names no product line builds
 the same prompt, byte for byte.
 """
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))  # workspaces.py lives in ../core
 
 import workspaces
 

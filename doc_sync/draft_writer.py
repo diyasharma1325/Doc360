@@ -28,7 +28,7 @@ from articles import ArticleService
 import review_queue
 import verify
 
-DRAFT_STATUS = 0  # see STATUS_MAP_ARTICLE in doc360-ia-audit/audit.py
+DRAFT_STATUS = 0  # get_article()'s `status`: 0 = latest version is an unpublished draft, 3 = published
 
 
 def has_pending_draft(article):

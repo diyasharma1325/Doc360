@@ -5,8 +5,8 @@ Everything downstream reads off this shape.
 `old`/`new`/`summary` remain the required, always-present fields — a
 one-line change is still valid as just those. The fields below them are
 optional, additive structure for a change that touches several content
-types at once (the common case once a change note comes from a PRD via
-prd_intake.py rather than being hand-typed):
+types at once (the common case once a change note comes from a ticket via
+ticket_intake.py rather than being hand-typed):
 
   - `product_lines`: the live Document360 workspaces this change ships in
     (e.g. ["DAP for Web", "DAP for Desktop"]). Most changes span several,
@@ -63,8 +63,8 @@ class ChangeNote:
 
 REQUIRED_FIELDS = ["feature_area", "summary", "old", "new"]
 # effective_date is optional and informational: nothing in discovery or
-# assessment depends on it, so the web forms no longer ask for it
-# (2026-11-06). prd_intake.py still records it when a PRD states one.
+# assessment depends on it. ticket_intake.py records it when the ticket or
+# an attachment states one.
 
 
 def load_change_note(path):

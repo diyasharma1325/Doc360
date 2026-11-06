@@ -1,32 +1,39 @@
-# Doc Sync Pipeline — MVP
+# Doc Sync Pipeline
 
-Stages 1-5 of the pipeline sketched in the "Doc Sync Pipeline" artifact,
-wired end to end on a narrow slice: one hand-picked change note, a
-hand-seeded set of candidate articles, an agent assessment, a
-safety-checked draft write, and a review queue. Stages 6 (verify) and 7
-(tag-map learning / run logging) are deliberately out of scope for this
-MVP.
+Finds the live Document360 articles a shipped change has made inaccurate,
+and drafts the corrections. A run starts from a **simulated Jira ticket**
+and moves across the I2P board's statuses: intake (the ticket becomes a
+structured change note), phase 1 (a numbered candidate plan the writer
+revises and approves by number), phase 2 (each approved article assessed,
+its correction drafted and verified), and a Jira-style artifact showing
+the whole run. The `doc-sync` Claude Code skill drives it end to end; see
+"Ticket runs" below. Nothing is ever published, and live articles are only
+read.
 
-**Standing decision, current as of this doc** — not a stopgap:
+`pipeline.py run` is the older entry point, for a hand-written change-note
+file; it still works, against the local mock archive by default. Tag-map
+learning (recording confirmed candidates back into `tag_map.json`) is not
+built.
+
+**Standing decisions, current as of this doc:**
 - **Claude is the default provider** (since 2026-11-06) for triage and
   assessment, called through `claude -p` on the writer's Claude Code
   login (`claude_call.py`, `claude-sonnet-5-5`), so no
   `ANTHROPIC_API_KEY` is needed. **Gemini is the fallback**
   (`--provider gemini`, `gemini-3.5-flash`, needs `GEMINI_API_KEY`).
-  PRD intake (`prd_intake.py`) is still Gemini-only until it is replaced by
-  ticket intake.
-- **The local mock archive is the default target** (`mock_d360.py`), since
-  live Document360 API access still isn't available in this environment.
-  `--live` switches to the real API once that changes.
-- **Six live workspaces are in scope, for reads and writes alike**
+- **Live articles are only read.** Ticket runs save drafts in the run
+  folder, or write them into Archived scratch articles the writer lists
+  (`archived_writer.py`, built but not used live yet). `pipeline.py run`
+  writes to the local mock archive (`mock_d360.py`) unless `--live`.
+- **Six live workspaces are in scope** for discovery and assessment
   (`core/workspaces.py`): DAP for Web, DAP for Desktop, DAP on OS, DAP for
   Mobile, Product Analytics and Whatfix Mirror. Anything else — Archived,
   Seek, and the non-public workspaces — is refused. Seek is excluded for
   now by decision (2026-11-04), not by limitation.
-- **Title-only discovery is still the default.** Index discovery
-  (`--discovery index`, all six workspaces) is opt-in until it has been
-  compared against title-only discovery on real change notes — see
-  "Index discovery" below.
+- **Ticket runs search article bodies by default** (`index`, 2026-11-07),
+  scoped to the product lines the ticket names; `both` adds a strict title
+  check. `pipeline.py run` and `kb_search.py` still default to title-only
+  discovery. See "Discovery scope" and "Index discovery" below.
 
 ## Files
 
@@ -74,8 +81,8 @@ Requires everything already in `.env` (`D360_API_KEY`, `D360_PROJECT_ID`,
 `D360_FOLDER_ID`, `D360_USER_ID`), plus the `claude` CLI installed and
 logged in (`python3 doc_sync/claude_call.py selftest` should answer) for
 the default provider. `GEMINI_API_KEY` is needed only for
-`--provider gemini` (including `ticket_intake.py --provider gemini`) and
-for the web app's PRD intake. `ANTHROPIC_API_KEY` is never
+`--provider gemini` (including `ticket_run.py intake --provider gemini`).
+`ANTHROPIC_API_KEY` is never
 needed, and is stripped from `claude -p`'s environment if set, so calls
 always run on the Claude Code login. `beautifulsoup4` (in
 `requirements.txt`) is needed only to build the knowledge index.
@@ -204,7 +211,9 @@ builds and publishes the artifact. In Claude Code, ask to "run doc sync on a
 ticket" or type `/doc-sync`. The skill only runs commands; it never edits the
 pipeline code.
 
-Still to come: removing the web app.
+The local web app (`webapp.py`) and its PRD intake (`prd_intake.py`) were
+removed on 2026-11-07: the ticket run, the skill and the artifact replace
+them.
 
 ## Before your first run
 
@@ -313,7 +322,7 @@ both providers):
 
 ```
 DOC_SYNC_LLM_CACHE=1 python3 doc_sync/pipeline.py run --change-note ...
-DOC_SYNC_LLM_CACHE=1 python3 doc_sync/webapp.py
+DOC_SYNC_LLM_CACHE=1 python3 doc_sync/ticket_run.py phase1 <name>
 ```
 
 A request that is exactly the same as one already sent (same change
@@ -446,8 +455,9 @@ this fix was computed against the wrong, archived dataset and should be
 disregarded.** Since 2026-11-04 names resolve against
 `core/workspaces.py`'s allow-list instead, which refuses Archived and
 every other non-live workspace by name and by id — the structural fix
-for this class of bug, not just this instance of it. `prd_intake.py`
-likewise only offers the six live names to the model.
+for this class of bug, not just this instance of it. Ticket intake
+(`ticket_intake.py`) likewise only offers the six live names to the model,
+and checks its answer against the same list.
 
 ## Index discovery (`--discovery index`, opt-in)
 
@@ -524,9 +534,13 @@ files are fixed snapshots; the knowledge index is the up-to-date source.
 
 ## Not yet done
 
-- **Compare index discovery against title-only discovery** on the same
-  real change notes before making index the default. Until then index
-  mode is opt-in, and `webapp.py`'s Discover screen still uses titles.
+- **The end-to-end test with Archived writes**: one ticket run through the
+  `doc-sync` skill, writing its drafts into Archived scratch articles, then
+  the artifact. Archived writes have so far been tested against a fake
+  client only (decision 2026-11-07).
+- **Compare discovery modes on more tickets.** Index became the ticket-run
+  default after one broad and one narrow ticket (2026-11-07); `both` is
+  there to check whether the title pass keeps finding real gaps.
 - **Validate recall** against a known set of real articles in the
   correct workspaces (everything tested before 2026-10-29 was against the
   wrong one).

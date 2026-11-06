@@ -209,7 +209,7 @@ def _resolve_project_version_id(product_line):
 def fetch_kb_articles(client=None, project_version_id=None, product_line=DEFAULT_PRODUCT_LINE):
     """Walk a real Document360 workspace's category tree and flatten it
     into one row per article: {id, title, category_path, status}.
-    Read-only — mirrors doc360-ia-audit/audit.py's walk().
+    Read-only.
 
     Pass `project_version_id` directly to target a workspace by id, or
     `product_line` (its display name, e.g. "DAP for Web") to resolve it
