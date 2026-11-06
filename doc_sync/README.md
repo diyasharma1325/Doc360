@@ -34,7 +34,8 @@ MVP.
 |---|---|---|
 | `ticket.py` | 1 | The simulated Jira ticket a run starts from (summary, free-text description, PDF attachments, assignee) in its own `runs/<name>/` folder, and the local recorder for its status moves and comments (`out/jira_log.json`, `out/comment-NN.txt`). Nothing touches a real Jira |
 | `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`ticket_intake_prompt.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
-| `ticket_run.py` | 1-2 | The ticket's steps: `intake`, `phase1` (discovery -> numbered candidate plan comment, In Draft -> Peer review), `replan` (writer feedback -> revised plan), `approve` (plan numbers -> `approved.json`, Peer review -> For review), `show` |
+| `ticket_run.py` | 1-4 | The ticket's steps: `intake`, `phase1` (discovery -> numbered candidate plan comment, In Draft -> Peer review), `replan` (writer feedback -> revised plan), `approve` (plan numbers -> `approved.json`, Peer review -> For review), `phase2` (assess approved articles, save or write drafts, final comment), `show` |
+| `archived_writer.py` | 4 | The only way a ticket run writes to Document360: into the writer's listed Archived scratch articles, never a live one. Refuses unlisted ids and anything not in the Archived workspace, names every target before an overwrite, direct update (never a fork or publish) |
 | `pdf_text.py` | 1 | Ticket PDF attachments -> text (pdfplumber, tables as Markdown), with the I2P agent's 10 MB / 300-page limits |
 | `change_note.py` | 1 | Defines and validates the change-note shape, including the `product_lines` list |
 | `tag_map.py` | 2 (state) | Optional feature-area -> article-id cache, hand-seeded; never required |
@@ -98,6 +99,9 @@ python3 doc_sync/ticket_run.py intake  dap-display-names              # To Do ->
 python3 doc_sync/ticket_run.py phase1  dap-display-names [--discovery both]    # In Draft -> Peer review + plan
 python3 doc_sync/ticket_run.py replan  dap-display-names "Drop 2; also check Task List articles"
 python3 doc_sync/ticket_run.py approve dap-display-names "1, 3-5"       # Peer review -> For review
+python3 doc_sync/ticket_run.py phase2  dap-display-names               # drafts saved in the run folder
+python3 doc_sync/ticket_run.py phase2  dap-display-names \
+    --archived-targets "<archived link 1>, <archived link 2>, ..." --confirm-overwrite   # (not used yet)
 python3 doc_sync/ticket_run.py show    dap-display-names               # status, plan, approval
 python3 doc_sync/ticket.py show dap-display-names                      # ticket + every recorded event
 ```
@@ -144,9 +148,38 @@ saved as `approved.json`, and the ticket moves Peer review -> For review.
 After that, re-planning and re-approving are refused. A typed id once sent
 a test run after an article that doesn't exist (2026-11-06); numbers can't.
 
-Still to come: phase 2 (assessing the approved articles and writing drafts
-into Archived scratch articles, recorded on the ticket), the Jira-style
-artifact, and a `doc-sync` skill that drives the whole run.
+**Phase 2: assessing and drafting** (`ticket_run.py phase2`, For review).
+Each approved article, in plan order, is read live and assessed against
+the change. For one that needs an edit, its before and after HTML are
+saved in `out/articles/` (`NN-<slug>.before.html` / `.after.html`), then:
+
+- **Live article already has an unpublished draft** -> "Needs a manual
+  merge". Nothing is written; the proposed edit stays in the run folder.
+  The same check a live write will need, applied now even though no live
+  article is ever written.
+- **No Archived targets given** -> "Draft saved locally", verified against
+  the saved HTML.
+- **Archived targets given** -> written into the next unused one
+  (`archived_writer.py`), then read back and verified. **Live articles are
+  never written**: only Archived scratch articles the writer listed, one
+  per approved article (checked before any model call). Every target is
+  read first and refused unless it is in the Archived workspace; without
+  `--confirm-overwrite` the run names each target's current title and
+  stops, since an overwrite has no undo.
+
+Results are saved after every article (`results.json`), so re-running
+phase 2 retries only the failed ones and puts them in the next unused
+target. The final "drafts ready" comment lists every article's outcome,
+confidence and reason; the ticket stays in For review, as on the I2P board.
+Ticket runs don't use `review_queue.json`: the ticket is the review surface.
+
+**Archived writes are built but not used yet** (decision 2026-11-07): the
+write path and its guard are tested against a fake client only. Live
+Archived writes start once the whole pipeline is finished and tested end
+to end with the Jira-style artifact.
+
+Still to come: the Jira-style artifact and a `doc-sync` skill that drives
+the whole run.
 
 ## Before your first run
 

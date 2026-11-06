@@ -6,7 +6,18 @@ the existing articles a change has made wrong.
     python3 doc_sync/ticket_run.py phase1  <run> [--discovery both]         # In Draft -> Peer review + plan
     python3 doc_sync/ticket_run.py replan  <run> "<feedback>" [--product-lines ...]
     python3 doc_sync/ticket_run.py approve <run> "1, 3, 5-7" | all          # Peer review -> For review
+    python3 doc_sync/ticket_run.py phase2  <run> [--archived-targets "<link>, ..." --confirm-overwrite]
     python3 doc_sync/ticket_run.py show    <run>
+
+- PHASE 2 (For review) assesses each approved article against the change
+  and, for one that needs an edit, saves its before/after HTML in
+  out/articles/ and either keeps it there or writes it into one of the
+  writer's Archived scratch articles (archived_writer.py; never a live
+  article). The live article's own draft check runs first: an article with
+  an unpublished draft is a manual merge, never written over. Results are
+  saved after every article (results.json), so re-running phase 2 retries
+  only what failed. The final comment lists every article's outcome; the
+  ticket stays in For review, as on the I2P board.
 
 - PHASE 1 runs discovery (kb_search.py) on the change note intake saved,
   within the ticket's product lines, and records the result as a numbered
@@ -272,6 +283,195 @@ def approve(run, selection):
     return articles
 
 
+# --- phase 2 -------------------------------------------------------------------
+
+# Outcomes that are final: a re-run of phase 2 skips these and retries the rest.
+DONE = ("draft_written", "draft_saved", "no_edit", "merge_conflict")
+
+RESULT_LABELS = {
+    "draft_written": "Draft written",
+    "draft_saved": "Draft saved locally",
+    "no_edit": "No edit needed",
+    "merge_conflict": "Needs a manual merge",
+    "failed": "Failed",
+}
+
+
+def load_results(run):
+    p = _path(run, "results.json")
+    return json.loads(p.read_text()) if p.exists() else {"articles": {}, "targets_used": []}
+
+
+def _slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[:60] or "article"
+
+
+class _LocalHTML:
+    """A one-article stand-in client, so verify.py can check a draft that
+    was only saved locally."""
+
+    def __init__(self, html):
+        self.html = html
+
+    def get_article(self, article_id, lang_code="en"):
+        return {"data": {"html_content": self.html}}
+
+
+def _phase2_article(rd, note, a, client, assess, targets, used):
+    """Assess one approved article and save or write its draft. Returns its
+    result record; never raises for a per-article problem."""
+    import draft_writer
+    import verify
+
+    base = {"n": a["n"], "article_id": a["article_id"], "title": a["title"], "workspace": a.get("workspace"),
+            "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    try:
+        live = client.get_article(a["article_id"])["data"]
+        assessment = assess(a["article_id"], note, client=client)
+    except Exception as exc:
+        return {**base, "outcome": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    base.update(confidence=assessment.confidence, rationale=assessment.rationale)
+    if not assessment.needs_edit:
+        return {**base, "outcome": "no_edit"}
+    if not assessment.updated_html_content:
+        return {**base, "outcome": "failed",
+                "error": "The model said the article needs an edit but returned no corrected HTML."}
+
+    stem = f"{a['n']:02d}-{_slug(a['title'])}"
+    articles_dir = rd / "out" / "articles"
+    articles_dir.mkdir(parents=True, exist_ok=True)
+    (articles_dir / f"{stem}.before.html").write_text(assessment.original_html_content or "")
+    (articles_dir / f"{stem}.after.html").write_text(assessment.updated_html_content)
+    files = {"before": f"articles/{stem}.before.html", "after": f"articles/{stem}.after.html"}
+
+    # The live article's own draft check, exactly as a live write will
+    # need it: in-progress work in Document360 is never overwritten, even
+    # though this run only writes to Archived scratch articles.
+    if draft_writer.has_pending_draft(live):
+        return {**base, **files, "outcome": "merge_conflict",
+                "note": "The live article already has an unpublished draft; merge the proposed edit by hand."}
+
+    if targets is None:
+        check = verify.verify_article(a["article_id"], note, assessment.original_html_content,
+                                      client=_LocalHTML(assessment.updated_html_content))
+        return {**base, **files, "outcome": "draft_saved", "warnings": check.warnings}
+
+    free = [t["id"] for t in targets.describe() if t["id"] not in used]
+    if not free:
+        return {**base, **files, "outcome": "failed", "error": "No Archived target left to write this draft into."}
+    try:
+        link = targets.write(free[0], live.get("title") or a["title"], assessment.updated_html_content)
+        used.append(free[0])
+        check = verify.verify_article(free[0], note, assessment.original_html_content, client=targets.client)
+    except Exception as exc:
+        return {**base, **files, "outcome": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    return {**base, **files, "outcome": "draft_written", "target_id": free[0], "target_link": link,
+            "warnings": check.warnings}
+
+
+def phase2_comment(tk, results, approved):
+    """The final comment: what happened to each approved article."""
+    rows = [results["articles"][a["article_id"]] for a in approved["articles"]
+            if a["article_id"] in results["articles"]]
+    counts = {k: sum(1 for r in rows if r["outcome"] == k) for k in RESULT_LABELS}
+    summary = ", ".join(f"{counts[k]} {RESULT_LABELS[k].lower()}" for k in RESULT_LABELS if counts[k])
+    lines = [
+        f"I've worked through the **{len(rows)} approved article(s)** for **{tk['key']}**: {summary}.",
+        "",
+        "| # | Article | Workspace | Result | Notes |",
+        "|---|---|---|---|---|",
+    ]
+    for r in rows:
+        result = RESULT_LABELS[r["outcome"]]
+        if r["outcome"] == "draft_written":
+            result += f": [{r['target_id'][:8]}]({r['target_link']})"
+        elif r.get("after"):
+            result += f": `{r['after']}`"
+        notes = r.get("error") or r.get("note") or r.get("rationale") or ""
+        if r.get("warnings"):
+            notes += " ⚠ " + "; ".join(r["warnings"])
+        conf = f" ({r['confidence']} confidence)" if r.get("confidence") else ""
+        lines.append(f"| {r['n']} | {_cell(r['title'])} | {_cell(r.get('workspace'))} | {_cell(result)}{conf} | "
+                     f"{_cell(notes)} |")
+    lines.append("")
+    if counts["draft_written"] or counts["draft_saved"]:
+        lines.append("**Next step:** review each draft against its live article before anything is published. "
+                     "Nothing was published, and no live article was changed.")
+    if counts["merge_conflict"]:
+        lines.append("Articles that **need a manual merge** already have an unpublished draft in Document360, "
+                     "so I didn't write over it; the proposed edit is saved in the run folder.")
+    if counts["failed"]:
+        lines.append("Run phase 2 again to retry the **failed** article(s); the others are not redone.")
+    return "\n".join(lines)
+
+
+def run_phase2(run, provider=claude_call.DEFAULT_PROVIDER, archived_links=None, confirm_overwrite=False,
+               client=None, assess=None):
+    """For review: assess each approved article, save or write its draft,
+    record the final comment. The ticket stays in For review.
+
+    `archived_links`: the writer's Archived scratch articles to write the
+    drafts into (archived_writer.py). Without them, drafts are saved only
+    in the run folder. With them, nothing is written unless
+    `confirm_overwrite` is True: without it, every target is read, checked
+    and NAMED, and the run stops, so the writer can confirm what will be
+    overwritten. `client` and `assess` are for tests."""
+    rd = ticket.run_dir(run)
+    tk = ticket.load_ticket(rd)
+    _require_status(tk, ticket.FOR_REVIEW, "phase 2")
+    approved = load_approved(rd)
+    if not approved:
+        raise StepRefused(f"{tk['key']} has no approved articles.")
+    results = load_results(rd)
+    todo = [a for a in approved["articles"]
+            if results["articles"].get(a["article_id"], {}).get("outcome") not in DONE]
+    if not todo:
+        raise StepRefused(f"Phase 2 is already complete for {tk['key']}; see its final comment.")
+    note = load_change_note(str(_path(rd, "change_note.json")))
+
+    if assess is None:
+        if provider == "gemini":
+            from assess_gemini import assess_article as assess
+        else:
+            from assess import assess_article as assess
+    if client is None:
+        from d360_client import Document360Client
+        client = Document360Client()
+
+    targets = None
+    if archived_links:
+        from archived_writer import ArchivedTargets, ArchivedWriteRefused
+        targets = ArchivedTargets(archived_links, client=client)
+        try:
+            described = targets.describe()
+        except ArchivedWriteRefused as exc:
+            raise StepRefused(str(exc))
+        free = [t for t in described if t["id"] not in results["targets_used"]]
+        if len(free) < len(todo):
+            raise StepRefused(f"{len(todo)} article(s) still to do but only {len(free)} unused Archived target(s) "
+                              "listed. Add more links (one per approved article) before running phase 2.")
+        if not confirm_overwrite:
+            names = "\n".join(f"  - {t['title']!r}  ({t['link']})" for t in free)
+            raise StepRefused("These Archived articles would be OVERWRITTEN, content and title, with no undo:\n"
+                              f"{names}\nRun again with --confirm-overwrite once the writer has agreed.")
+
+    ticket.record_event(rd, "phase2_start", provider=provider, articles=[a["n"] for a in todo],
+                        archived=bool(targets))
+    used = results["targets_used"]
+    for a in todo:
+        print(f"\n  [{a['n']}] {a['title']} ({a.get('workspace')})", flush=True)
+        r = _phase2_article(rd, note, a, client, assess, targets, used)
+        print(f"      -> {RESULT_LABELS[r['outcome']]}" + (f": {r['error']}" if r.get("error") else ""), flush=True)
+        results["articles"][a["article_id"]] = r
+        results["targets_used"] = used
+        _save(rd, "results.json", results)  # after EVERY article, so a crash loses nothing done
+    ticket.record_comment(rd, phase2_comment(tk, results, approved), label="drafts ready")
+    ticket.record_event(rd, "phase2_done", outcomes={a["n"]: results["articles"][a["article_id"]]["outcome"]
+                                                     for a in approved["articles"]
+                                                     if a["article_id"] in results["articles"]})
+    return results
+
+
 # --- CLI -----------------------------------------------------------------------
 
 def show(run):
@@ -289,6 +489,12 @@ def show(run):
             print(f"  {mark}{c['n']:>3}. {c['title']}  ({c.get('workspace')}{by})")
     if approved:
         print(f"Approved: {approved['numbers']}  (* above)")
+    results = load_results(rd)["articles"]
+    if results:
+        print("Phase 2:")
+        for r in sorted(results.values(), key=lambda r: r["n"]):
+            where = r.get("target_link") or r.get("after") or r.get("error") or ""
+            print(f"  {r['n']:>3}. {RESULT_LABELS[r['outcome']]:<22} {r['title']}  {where}")
 
 
 def main():
@@ -317,6 +523,15 @@ def main():
     p.add_argument("run")
     p.add_argument("selection", help='Plan numbers, e.g. "1, 3, 5-7", or "all"')
 
+    p = sub.add_parser("phase2", help="For review: assess approved articles, save or write their drafts")
+    p.add_argument("run")
+    p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER)
+    p.add_argument("--archived-targets", default=None,
+                   help="Comma-separated Archived portal links to write the drafts into, one per approved "
+                        "article. Without it, drafts are saved only in the run folder.")
+    p.add_argument("--confirm-overwrite", action="store_true",
+                   help="The writer has agreed the listed Archived articles may be overwritten")
+
     p = sub.add_parser("show", help="Print the ticket's status, plan and approval")
     p.add_argument("run")
 
@@ -343,6 +558,10 @@ def main():
             print(f"Approved {len(articles)} article(s):")
             for a in articles:
                 print(f"  {a['n']}. {a['title']}  ({a.get('workspace')})")
+        elif args.command == "phase2":
+            links = [l.strip() for l in (args.archived_targets or "").split(",") if l.strip()]
+            run_phase2(args.run, args.provider, links or None, args.confirm_overwrite)
+            show(args.run)
         else:
             show(args.run)
     except StepRefused as exc:
