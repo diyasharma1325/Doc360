@@ -1,7 +1,6 @@
-"""PRIMARY assessment path as of this standing decision — not a
-substitute. Uses Gemini (gemini-3.5-flash) and is pipeline.py's default
-provider until ANTHROPIC_API_KEY access is confirmed, at which point
-assess.py (Claude) becomes default again via --provider claude.
+"""FALLBACK assessment path (`--provider gemini`) since 2026-11-06, when
+Claude via `claude -p` (assess.py) became the default. Uses Gemini
+(gemini-3.5-flash) and needs GEMINI_API_KEY.
 
 Same interface as assess.py — assess_article(article_id, change_note,
 client=None) -> Assessment — and reuses its prompt-loading helper

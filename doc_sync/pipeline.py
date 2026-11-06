@@ -4,8 +4,11 @@ the review queue (stage 5) from the same CLI.
 
 Current defaults, as of this standing decision — not a fallback, the
 actual setup until told otherwise:
-  - Gemini is the PRIMARY provider (assess_gemini.py), not a substitute.
-    Pass --provider claude once ANTHROPIC_API_KEY access is confirmed.
+  - Claude is the DEFAULT provider for triage and assessment, called
+    through `claude -p` on the writer's Claude Code login (claude_call.py,
+    assess.py) — no ANTHROPIC_API_KEY needed. Gemini (assess_gemini.py,
+    gemini_call.py) is kept as a fallback: pass --provider gemini.
+    (2026-11-06; Gemini was the default before.)
   - The local mock archive (mock_d360.py) is the default write target,
     since this environment's writes to the real Document360 API are
     blocked regardless of --live. Discovery and assessment reads can
@@ -31,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))  # d360_client.py lives in ../core
 
 import candidates
+import claude_call
 import draft_writer
 import mock_d360
 import review_queue
@@ -39,15 +43,16 @@ from change_note import load_change_note
 from d360_client import Document360Client
 
 
-def run(change_note_path, live=False, provider="gemini", product_line=None,
+def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, product_line=None,
         only_ids=None, limit=None, discovery="titles"):
-    # Imported here, not at module level, so picking "claude" never
-    # requires google-genai to be installed, and vice versa.
+    # Imported here, not at module level, so the default "claude" path
+    # never requires google-genai to be installed.
     if provider == "gemini":
         from assess_gemini import assess_article
-    else:
+    elif provider == "claude":
         from assess import assess_article
-        print("(using --provider claude — confirm ANTHROPIC_API_KEY is set)")
+    else:
+        raise ValueError(f"provider must be one of {claude_call.PROVIDERS}, got {provider!r}")
 
     change_note = load_change_note(change_note_path)
 
@@ -90,7 +95,7 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
             scope = (product_line or "all six live workspaces") if indexed else kb_product_line
             article_ids, found, scanned = kb_search.find_candidates_live(
                 change_note, product_line=kb_product_line,
-                discovery=discovery, index_workspace=product_line,
+                discovery=discovery, index_workspace=product_line, provider=provider,
             )
             print(f"No tag_map entry for feature_area={change_note.feature_area!r} — ran a live KB "
                   f"search ({'index' if indexed else 'titles'}) under {scope!r} instead: scanned "
@@ -203,8 +208,9 @@ def main():
     run_p.add_argument("--change-note", required=True, dest="path")
     run_p.add_argument("--live", action="store_true",
                         help="Use the real Document360 API instead of the local mock archive (default: mock)")
-    run_p.add_argument("--provider", choices=["claude", "gemini"], default="gemini",
-                        help="Model backend for assessment (default: gemini — primary until ANTHROPIC_API_KEY is confirmed)")
+    run_p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER,
+                        help="Model for triage and assessment: 'claude' (default — claude -p on your "
+                             "Claude Code login, no API key) or 'gemini' (fallback, needs GEMINI_API_KEY)")
     run_p.add_argument("--product-line", default=None,
                         help="The real Document360 workspace to search, by display name, if "
                              "tag_map.json has no entry for this change note's feature_area and a "

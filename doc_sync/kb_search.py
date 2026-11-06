@@ -35,8 +35,9 @@ Two discovery modes (`discovery=`), "titles" being the default:
   index has been built.
 
 Read-only end to end — makes no writes, no queue entries, no draft edits.
-Uses Gemini (gemini-3.5-flash), matching the pipeline's current primary
-provider in assess_gemini.py.
+The triage call goes to Claude through `claude -p` by default
+(claude_call.py), or to Gemini (gemini-3.5-flash) with provider="gemini" —
+the same choice as the pipeline's --provider.
 """
 import argparse
 import os
@@ -48,17 +49,17 @@ from pathlib import Path
 THIS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(THIS_DIR.parent / "core"))  # d360_client.py lives in ../core
 
-from google import genai
-from google.genai import types
-
-import gemini_call
+import claude_call
 import kb_index
 import product_context
 import workspaces
 from change_note import load_change_note
 from d360_client import Document360Client
 
-MODEL = "gemini-3.5-flash"
+GEMINI_MODEL = "gemini-3.5-flash"
+# Same output ceiling for both providers. Gemini's thinking tokens share it,
+# which is what once produced a MAX_TOKENS failure here (see triage()).
+TRIAGE_MAX_OUTPUT_TOKENS = 16384
 PROMPT_PATH = os.path.join(os.path.dirname(__file__), "kb_search_prompt.md")
 
 DISCOVERY_MODES = ("titles", "index")
@@ -105,32 +106,30 @@ _SHORTLIST_NOTE = (
 # workspaces, which also refuses anything outside them (Archived included).
 DEFAULT_PRODUCT_LINE = "DAP for Web"
 
-CANDIDATES_FUNCTION = types.FunctionDeclaration(
-    name="report_candidates",
-    description="Report which articles from the list are plausibly affected by this change.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "candidates": {
-                "type": "array",
-                "description": "Articles that plausibly need review for this change. Empty if none.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "article_id": {"type": "string"},
-                        "title": {"type": "string"},
-                        "reason": {
-                            "type": "string",
-                            "description": "Why this article is plausibly affected, in one short phrase.",
-                        },
+# One schema for both providers: Claude gets it as --json-schema, Gemini as
+# the parameters of its forced `report_candidates` function call.
+CANDIDATES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "candidates": {
+            "type": "array",
+            "description": "Articles that plausibly need review for this change. Empty if none.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "article_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this article is plausibly affected, in one short phrase.",
                     },
-                    "required": ["article_id", "title", "reason"],
                 },
+                "required": ["article_id", "title", "reason"],
             },
         },
-        "required": ["candidates"],
     },
-)
+    "required": ["candidates"],
+}
 
 
 def _load_prompt(product_line=None, include_products=True):
@@ -222,13 +221,16 @@ def _listing_line(a):
     return line
 
 
-def triage(change_note, articles, shortlist=False, product_line=None):
+def triage(change_note, articles, shortlist=False, product_line=None,
+           provider=claude_call.DEFAULT_PROVIDER):
     """One model call: given the full article list (titles only — no
     content fetched yet), ask which are plausibly affected. Returns the
     list of {article_id, title, reason} dicts the model reported.
     `shortlist=True` marks `articles` as an "index" mode shortlist rather
     than a whole workspace (see _SHORTLIST_NOTE). `product_line` picks the
-    product reference files ("titles" mode only; default DAP for Web)."""
+    product reference files ("titles" mode only; default DAP for Web).
+    `provider` is "claude" (default, claude -p) or "gemini" (fallback);
+    both get the same system prompt, request and schema."""
     listing = "\n".join(_listing_line(a) for a in articles)
     note_lines = [
         "Change note:",
@@ -260,10 +262,36 @@ def triage(change_note, articles, shortlist=False, product_line=None):
     prompt = "\n".join(note_lines) + f"\n\nKnowledge base articles ({len(articles)} total):\n{listing}"
     if shortlist:
         prompt = _SHORTLIST_NOTE + prompt
+    system = _load_prompt(product_line, include_products=not shortlist)
 
+    if provider == "claude":
+        result = claude_call.generate(
+            system=system, user=prompt, schema=CANDIDATES_SCHEMA, label="triage",
+            max_tokens=TRIAGE_MAX_OUTPUT_TOKENS,
+        )
+        return list(result.get("candidates", []))
+    if provider != "gemini":
+        raise ValueError(f"provider must be one of {claude_call.PROVIDERS}, got {provider!r}")
+    return _triage_gemini(system, prompt)
+
+
+def _triage_gemini(system, prompt):
+    """The Gemini fallback for triage(), unchanged from when Gemini was the
+    only provider. Imported lazily, so the Claude path never needs
+    google-genai installed."""
+    from google import genai
+    from google.genai import types
+
+    import gemini_call
+
+    candidates_function = types.FunctionDeclaration(
+        name="report_candidates",
+        description="Report which articles from the list are plausibly affected by this change.",
+        parameters=CANDIDATES_SCHEMA,
+    )
     gclient = genai.Client()  # reads GEMINI_API_KEY from the environment
     config = types.GenerateContentConfig(
-        system_instruction=_load_prompt(product_line, include_products=not shortlist),
+        system_instruction=system,
         # A real KB's title listing is large (734 articles ~= 40k prompt
         # tokens in the first live test) and this model spends thousands
         # of tokens "thinking" before answering — left at the assess.py
@@ -275,9 +303,9 @@ def triage(change_note, articles, shortlist=False, product_line=None):
         # was already the largest, riskiest prompt in the pipeline for
         # this exact failure mode, so the added context gets a bigger
         # thinking allowance, not the same one stretched further.
-        max_output_tokens=16384,
+        max_output_tokens=TRIAGE_MAX_OUTPUT_TOKENS,
         thinking_config=types.ThinkingConfig(thinking_budget=2048),
-        tools=[types.Tool(function_declarations=[CANDIDATES_FUNCTION])],
+        tools=[types.Tool(function_declarations=[candidates_function])],
         tool_config=types.ToolConfig(
             function_calling_config=types.FunctionCallingConfig(
                 mode="ANY",
@@ -286,7 +314,7 @@ def triage(change_note, articles, shortlist=False, product_line=None):
         ),
     )
 
-    response = gemini_call.generate(gclient, MODEL, prompt, config, "triage")
+    response = gemini_call.generate(gclient, GEMINI_MODEL, prompt, config, "triage")
 
     candidates_out = response.candidates or []
     if not candidates_out or not getattr(candidates_out[0].content, "parts", None):
@@ -338,7 +366,8 @@ def index_available(db_path=kb_index.DEFAULT_DB_PATH):
     return st.get("exists", False) and "error" not in st
 
 
-def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAULT_DB_PATH):
+def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAULT_DB_PATH,
+                            provider=claude_call.DEFAULT_PROVIDER):
     """"index" mode: full-text search across all six live workspaces (or
     just `workspace`, by display name), balanced per workspace, then one
     triage call over the shortlist. Same return shape as
@@ -391,7 +420,7 @@ def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAUL
     if not shortlist:
         return [], [], []
 
-    found = triage(change_note, shortlist, shortlist=True)
+    found = triage(change_note, shortlist, shortlist=True, provider=provider)
     # The model may only pick from what it was shown: an id outside the
     # shortlist is a hallucination or a typo, never a real candidate.
     shown = {a["id"] for a in shortlist}
@@ -403,9 +432,10 @@ def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAUL
 
 def find_candidates_live(change_note, client=None, project_version_id=None,
                           product_line=DEFAULT_PRODUCT_LINE, discovery=DEFAULT_DISCOVERY,
-                          index_workspace=None):
+                          index_workspace=None, provider=claude_call.DEFAULT_PROVIDER):
     """Discovery entry point used by pipeline.py's automatic KB fallback.
     Returns (article_ids, full_candidate_records, all_articles_scanned).
+    `provider` picks the triage model: "claude" (default) or "gemini".
 
     discovery="titles": walk the real `product_line` workspace, then
     semantically triage it (one model call — see the module docstring).
@@ -418,11 +448,11 @@ def find_candidates_live(change_note, client=None, project_version_id=None,
         raise ValueError(f"discovery must be one of {DISCOVERY_MODES}, got {discovery!r}")
     if discovery == "index":
         if index_available():
-            return find_candidates_indexed(change_note, workspace=index_workspace)
+            return find_candidates_indexed(change_note, workspace=index_workspace, provider=provider)
         print("    (no knowledge index built yet — falling back to title-only discovery; "
               "build one with: python3 doc_sync/kb_index.py build)")
     articles = fetch_kb_articles(client, project_version_id, product_line=product_line)
-    found = triage(change_note, articles, product_line=product_line)
+    found = triage(change_note, articles, product_line=product_line, provider=provider)
     return [c["article_id"] for c in found], found, articles
 
 
@@ -440,6 +470,9 @@ def main():
                          help="'titles' (default): triage every title in one workspace. 'index': "
                               "search article bodies across all six live workspaces with the local "
                               "knowledge index, then triage that shortlist.")
+    parser.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER,
+                         help="Model for the triage call: 'claude' (default, claude -p on your Claude "
+                              "Code login) or 'gemini' (fallback, needs GEMINI_API_KEY).")
     args = parser.parse_args()
 
     change_note = load_change_note(args.change_note_path)
@@ -448,7 +481,8 @@ def main():
     if args.discovery == "index" and index_available():
         scope = args.product_line or "all six live workspaces"
         print(f"Searching the local knowledge index ({scope}), then triaging the shortlist...")
-        _, found, scanned = find_candidates_indexed(change_note, workspace=args.product_line)
+        _, found, scanned = find_candidates_indexed(change_note, workspace=args.product_line,
+                                                    provider=args.provider)
         print(f"  Shortlisted {len(scanned)} article(s). Total: {time.time() - t0:.1f}s.\n")
     else:
         if args.discovery == "index":
@@ -461,7 +495,7 @@ def main():
         print(f"  {len(articles)} article(s) found in {t1 - t0:.1f}s.")
 
         print("Running semantic triage against the change note...")
-        found = triage(change_note, articles, product_line=product_line)
+        found = triage(change_note, articles, product_line=product_line, provider=args.provider)
         t2 = time.time()
         print(f"  Triage took {t2 - t1:.1f}s. Total: {t2 - t0:.1f}s.\n")
 

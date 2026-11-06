@@ -13,5 +13,6 @@ out in the next, more careful assessment step.
 
 It is fine to select zero articles if genuinely none apply.
 
-Answer only by calling the `report_candidates` tool — do not respond in
+Answer only through the structured response format you are given (the
+`report_candidates` function, where one is offered) — do not respond in
 plain text.

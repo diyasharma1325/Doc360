@@ -8,10 +8,13 @@ safety-checked draft write, and a review queue. Stages 6 (verify) and 7
 MVP.
 
 **Standing decision, current as of this doc** — not a stopgap:
-- **Gemini is the primary provider** (`assess_gemini.py`, `gemini-3.5-flash`),
-  the default for `pipeline.py run`. Claude (`assess.py`) remains built and
-  available via `--provider claude`, and becomes default again once
-  `ANTHROPIC_API_KEY` access is confirmed.
+- **Claude is the default provider** (since 2026-11-06) for triage and
+  assessment, called through `claude -p` on the writer's Claude Code
+  login (`claude_call.py`, `claude-sonnet-5-5`), so no
+  `ANTHROPIC_API_KEY` is needed. **Gemini is the fallback**
+  (`--provider gemini`, `gemini-3.5-flash`, needs `GEMINI_API_KEY`).
+  PRD intake (`prd_intake.py`) is still Gemini-only until it is replaced by
+  ticket intake.
 - **The local mock archive is the default target** (`mock_d360.py`), since
   live Document360 API access still isn't available in this environment.
   `--live` switches to the real API once that changes.
@@ -35,14 +38,15 @@ MVP.
 | `kb_search.py` | 2 | Live search, two modes. **titles** (default): walks one real Document360 workspace and semantically triages every title against the change note (one model call). **index** (opt-in): searches article bodies across all six live workspaces with `kb_index.py`, then triages only that shortlist. `pipeline.py` runs this automatically whenever `candidates.py` finds no tag_map entry — see "Live KB search" and "Index discovery" below |
 | `kb_index.py` | 2 (state) | Local full-text index of every published article body in the six live workspaces (`data/knowledge.db`, git-ignored). `build` (~30-40 min, read-only), `status`, `search`. Built all-or-nothing |
 | `kb_search_prompt.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
-| `assess.py` | 3 | Claude path — needs `ANTHROPIC_API_KEY`, not currently default |
-| `assess_gemini.py` | 3 | **Gemini path — current default**, needs `GEMINI_API_KEY` |
+| `assess.py` | 3 | **Claude path — default**, through `claude_call.py`; no API key needed |
+| `assess_gemini.py` | 3 | Gemini path — fallback (`--provider gemini`), needs `GEMINI_API_KEY` |
 | `assess_prompt.md` | 3 | Fixed task instructions, concatenated at runtime with `guidelines/document360-formatting.md`, `guidelines/whatfix-writing-guidelines-agent.md` and the article's product reference files; shared by both assess modules |
 | `product_context.py` | 2-3 | Picks which product reference files a prompt carries, by product line — the article's own workspace first, then the change note's `product_line`, then DAP for Web |
 | `dap-core.md`, `dap-web.md`, `dap-desktop.md`, `dap-os.md`, `dap-mobile.md`, `product-analytics.md`, `mirror.md` | 2-3 (reference) | Product reference files: concepts, terminology, and a fixed snapshot of each workspace's category structure. The four `dap-*` surface files are deltas on `dap-core.md` and always load with it |
 | `draft_writer.py` | 4 | Only file that writes to Document360. Checks for an existing draft FIRST, then forks the article into a new draft version and writes into that; never publishes |
 | `verify.py` | 4 | Cheap post-write checks (old text gone, new text present, HTML intact, no images lost), shown to the reviewer before they decide |
 | `review_queue.py` | 5 | JSON-backed pending/approved/rejected/merge_conflict queue |
+| `claude_call.py` | 2-3 | Every Claude call goes through here: `claude -p` with `--json-schema` structured output, run from a temp folder outside the repo (so no `CLAUDE.md` is loaded) with `ANTHROPIC_API_KEY` stripped; retries, a per-call report, a call log (`data/model_calls.jsonl`) and the shared local response cache. `python3 doc_sync/claude_call.py selftest` checks it works |
 | `gemini_call.py` | 2-3 | Every Gemini call goes through here: retries, a per-call token report, and the opt-in local response cache (`DOC_SYNC_LLM_CACHE=1`) |
 | `mock_d360.py` | — | Local file-backed stand-in for Document360, including the fork; current default target |
 | `pipeline.py` | orchestrator | `run` and `review` CLI commands |
@@ -56,9 +60,12 @@ pip install -r requirements.txt
 ```
 
 Requires everything already in `.env` (`D360_API_KEY`, `D360_PROJECT_ID`,
-`D360_FOLDER_ID`, `D360_USER_ID`) plus `GEMINI_API_KEY` (currently
-required — it's the default provider). `ANTHROPIC_API_KEY` is only
-needed if you explicitly pass `--provider claude`. `beautifulsoup4` (in
+`D360_FOLDER_ID`, `D360_USER_ID`), plus the `claude` CLI installed and
+logged in (`python3 doc_sync/claude_call.py selftest` should answer) for
+the default provider. `GEMINI_API_KEY` is needed only for
+`--provider gemini` and for PRD intake. `ANTHROPIC_API_KEY` is never
+needed, and is stripped from `claude -p`'s environment if set, so calls
+always run on the Claude Code login. `beautifulsoup4` (in
 `requirements.txt`) is needed only to build the knowledge index.
 
 All commands below assume you're running from the repo root (`Doc360/`),
@@ -101,9 +108,9 @@ python3 doc_sync/pipeline.py review approve <item_id>
 python3 doc_sync/pipeline.py review reject <item_id>
 ```
 
-The `run` command above defaults to `--provider gemini` against the mock
+The `run` command above defaults to `--provider claude` against the mock
 archive — add `--live` once real Document360 access is available, and
-`--provider claude` once `ANTHROPIC_API_KEY` is confirmed. Add
+`--provider gemini` to use the Gemini fallback for triage and assessment. Add
 `--discovery index` to search all six live workspaces with the knowledge
 index instead of walking one workspace's titles (`--product-line` then
 narrows it to one workspace).
@@ -114,8 +121,17 @@ rejected one, both stay manual actions you take directly in Document360.
 
 ## Saving tokens while testing
 
-Every Gemini call prints what it spent (`in / out, of it thinking`).
-To replay instead of re-spending, set `DOC_SYNC_LLM_CACHE=1`:
+Every model call prints what it spent: Claude calls as
+`model, in / out, seconds, $cost` (and every one is appended to
+`data/model_calls.jsonl`), Gemini calls as `in / out, of it thinking`.
+The dollar figure is what `claude -p` reports for the call; it counts
+against the Claude Code plan, not an API bill. Claude Code caches the
+long shared system prompt (style guides plus product files), so
+consecutive assessments cost far less than the first (measured
+2026-11-06: $0.19 for the first, $0.01–0.03 after).
+
+To replay instead of re-spending, set `DOC_SYNC_LLM_CACHE=1` (works for
+both providers):
 
 ```
 DOC_SYNC_LLM_CACHE=1 python3 doc_sync/pipeline.py run --change-note ...
