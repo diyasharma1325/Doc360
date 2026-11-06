@@ -40,6 +40,7 @@ provider in assess_gemini.py.
 """
 import argparse
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -49,8 +50,8 @@ sys.path.insert(0, str(THIS_DIR.parent / "core"))  # d360_client.py lives in ../
 
 from google import genai
 from google.genai import types
-from google.genai import errors as genai_errors
 
+import gemini_call
 import kb_index
 import product_context
 import workspaces
@@ -278,19 +279,7 @@ def triage(change_note, articles, shortlist=False, product_line=None):
         ),
     )
 
-    # Same retry behavior as assess_gemini.py — this model intermittently
-    # returns a transient 503 even back to back with a successful call.
-    max_attempts = 4
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = gclient.models.generate_content(model=MODEL, contents=prompt, config=config)
-            break
-        except genai_errors.ServerError as exc:
-            if attempt == max_attempts:
-                raise
-            wait = 5 * attempt
-            print(f"    (Gemini call failed with {exc} — retrying in {wait}s, attempt {attempt}/{max_attempts})")
-            time.sleep(wait)
+    response = gemini_call.generate(gclient, MODEL, prompt, config, "triage")
 
     candidates_out = response.candidates or []
     if not candidates_out or not getattr(candidates_out[0].content, "parts", None):
@@ -326,6 +315,17 @@ def _index_query(change_note):
     return " ".join(p for p in parts if p)
 
 
+def _index_focus(change_note):
+    """The feature names "index" mode requires a match on: the affected
+    content types, each change's content type, and the feature area with
+    its slug dashes turned to spaces ("branching-visual-indicators" ->
+    "branching visual indicators"). See kb_index.search()'s `focus`."""
+    names = list(change_note.affected_content_types or [])
+    names.extend(c.content_type for c in (change_note.changes or []))
+    names.append(re.sub(r"[-_]+", " ", change_note.feature_area or ""))
+    return [n for n in names if n and n.strip()]
+
+
 def index_available(db_path=kb_index.DEFAULT_DB_PATH):
     st = kb_index.status(db_path)
     return st.get("exists", False) and "error" not in st
@@ -344,9 +344,22 @@ def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAUL
               f"rebuild with: python3 doc_sync/kb_index.py build)")
 
     query = _index_query(change_note)
-    hits = []
-    for name in ([workspace] if workspace else workspaces.names()):
-        hits.extend(kb_index.search(query, k=INDEX_PER_WORKSPACE, workspace=name, db_path=db_path))
+    focus = _index_focus(change_note)
+    names = [workspace] if workspace else workspaces.names()
+
+    def run(focus):
+        hits = []
+        for name in names:
+            hits.extend(kb_index.search(query, k=INDEX_PER_WORKSPACE, workspace=name, db_path=db_path, focus=focus))
+        return hits
+
+    hits = run(focus)
+    if not hits:
+        # The feature names matched nothing anywhere (a vague or new
+        # feature area, no content types listed): search on the whole
+        # note's wording instead of returning an empty shortlist.
+        print(f"    (no indexed article mentions {focus!r} — searching on the change note's full wording instead)")
+        hits = run(None)
     hits.sort(key=lambda h: h["score"])  # bm25: lower is better, comparable across workspaces (one index)
     shortlist = [{
         "id": h["article_id"],

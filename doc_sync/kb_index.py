@@ -100,6 +100,10 @@ _STOPWORDS = {
 }
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _MAX_QUERY_TERMS = 48
+# search(focus=...): how much more a match on the feature's own name
+# counts than a match on the rest of the change note's wording. 2 was
+# picked by comparing shortlists for the saved change notes (2026-11-06).
+FOCUS_WEIGHT = 2.0
 
 
 class IndexBuildIncomplete(RuntimeError):
@@ -249,25 +253,55 @@ def _match_query(text):
     return " OR ".join(f'"{t}"' for t in terms[:_MAX_QUERY_TERMS])
 
 
-def search(query, k=40, workspace=None, db_path=DEFAULT_DB_PATH):
+def _focus_query(phrases):
+    """Feature names ("Smart Tips", "Flows") -> an FTS5 OR query of quoted
+    phrases, so "smart tips" must appear as those two words together."""
+    out = []
+    for phrase in phrases or []:
+        words = " ".join(_TOKEN_RE.findall((phrase or "").lower()))
+        if words and words not in out:
+            out.append(words)
+    return " OR ".join(f'"{p}"' for p in out)
+
+
+def search(query, k=40, workspace=None, db_path=DEFAULT_DB_PATH, focus=None):
     """Up to `k` articles most relevant to `query`, best first (BM25,
     titles weighted above bodies), optionally narrowed to one live
     workspace by name. Each result: {article_id, title, category_path,
     workspace, version_id, url, snippet, score}, where `snippet` is the
     matching passage with hits in [brackets]. Raises FileNotFoundError if
-    the index hasn't been built — callers decide whether to fall back."""
+    the index hasn't been built — callers decide whether to fall back.
+
+    `focus` is a list of feature names. When given, only articles that
+    mention at least one of them are returned, and how strongly an article
+    matches them counts FOCUS_WEIGHT times as much as its match on the
+    rest of `query`. Without it, a change note's everyday words ("display",
+    "text", "dashboard", in a third of all articles each) decide the
+    ranking, and articles that never mention the feature fill the list."""
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"No knowledge index at {db_path}; run: python3 doc_sync/kb_index.py build")
     match = _match_query(query)
+    focus_match = _focus_query(focus)
     if not match:
         return []
-    sql = (
-        "SELECT article_id, title, category_path, workspace, version_id, url, "
-        "snippet(articles, 2, '[', ']', '…', 16) AS snippet, "
-        f"bm25(articles, {_BM25_WEIGHTS}) AS score "
-        "FROM articles WHERE articles MATCH ?"
-    )
-    params = [match]
+    if focus_match:
+        sql = (
+            "WITH focus AS (SELECT rowid AS rid, "
+            f"bm25(articles, {_BM25_WEIGHTS}) AS focus_score FROM articles WHERE articles MATCH ?) "
+            "SELECT article_id, title, category_path, workspace, version_id, url, "
+            "snippet(articles, 2, '[', ']', '…', 16) AS snippet, "
+            f"bm25(articles, {_BM25_WEIGHTS}) + ? * focus.focus_score AS score "
+            "FROM articles JOIN focus ON articles.rowid = focus.rid WHERE articles MATCH ?"
+        )
+        params = [focus_match, FOCUS_WEIGHT, match]
+    else:
+        sql = (
+            "SELECT article_id, title, category_path, workspace, version_id, url, "
+            "snippet(articles, 2, '[', ']', '…', 16) AS snippet, "
+            f"bm25(articles, {_BM25_WEIGHTS}) AS score "
+            "FROM articles WHERE articles MATCH ?"
+        )
+        params = [match]
     if workspace:
         sql += " AND workspace = ?"
         params.append(workspace)

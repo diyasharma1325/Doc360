@@ -20,6 +20,23 @@ app = Flask(__name__)
 
 CHANGES_DIR = Path(__file__).parent / "data" / "changes"
 
+DISCOVERY_MODES = ("titles", "index")  # same choices as pipeline.py run --discovery
+
+
+def _discovery_mode(values):
+    """The discovery mode a form or query string asked for; anything
+    unrecognized means "titles", the pipeline's default."""
+    mode = values.get("discovery", "titles")
+    return mode if mode in DISCOVERY_MODES else "titles"
+
+
+def _index_status():
+    """kb_index.status(), for the discovery-mode picker to show whether
+    "index" mode will actually run or fall back to titles."""
+    import kb_index
+
+    return kb_index.status()
+
 
 @app.route("/")
 def home():
@@ -39,6 +56,7 @@ def new_change():
         )
         path = CHANGES_DIR / f"{note.feature_area}.json"
         save_change_note(note, path)
+        discovery = _discovery_mode(request.form)
         # Always goes through /discover now, not straight to /run — a
         # feature_area that doesn't exactly match a tag_map entry used to
         # hard-fail here (LookupError, 2026-10-29); now it falls through to
@@ -46,10 +64,10 @@ def new_change():
         # call and finding many candidates, so it still needs a human to
         # pick a deliberate subset before assessment runs, same as a
         # PRD-derived note.
-        return redirect(url_for("discover_candidates", path=str(path)))
+        return redirect(url_for("discover_candidates", path=str(path), discovery=discovery))
 
     feature_areas = sorted(tag_map.load().keys())
-    return render_template("new_change.html", feature_areas=feature_areas)
+    return render_template("new_change.html", feature_areas=feature_areas, index_status=_index_status())
 
 
 @app.route("/new/prd", methods=["POST"])
@@ -106,7 +124,7 @@ def review_extracted():
         # A PRD-derived note has no tag_map entry to look candidates up
         # from — it goes straight to live KB discovery instead of the
         # tag_map path the manual form uses.
-        return redirect(url_for("discover_candidates", path=path))
+        return redirect(url_for("discover_candidates", path=path, discovery=_discovery_mode(request.form)))
 
     # Raw JSON, not load_change_note() — this screen's entire purpose is
     # letting a human see and fill in exactly the blanks load_change_note
@@ -115,7 +133,7 @@ def review_extracted():
         note = json_module.load(f)
     note.setdefault("affected_content_types", [])
     note.setdefault("unaffected_content_types", [])
-    return render_template("review_extracted.html", path=path, note=note)
+    return render_template("review_extracted.html", path=path, note=note, index_status=_index_status())
 
 
 @app.route("/discover")
@@ -153,11 +171,22 @@ def discover_candidates():
 
     import kb_search
 
+    # "index" searches every live workspace (see kb_search.py); the note's
+    # product_line only scopes "titles" mode, same as pipeline.py run.
+    # Falls back to "titles" when no index is built, and the page says so.
+    discovery = _discovery_mode(request.args)
+    indexed = discovery == "index" and kb_search.index_available()
     product_line = note.product_line or kb_search.DEFAULT_PRODUCT_LINE
-    _, found, scanned = kb_search.find_candidates_live(note, product_line=product_line)
+    _, found, scanned = kb_search.find_candidates_live(note, product_line=product_line, discovery=discovery)
+    # An "index" shortlist entry carries its workspace; triage's own
+    # records don't, so it's looked up by id for display.
+    workspace_of = {a["id"]: a.get("workspace") for a in scanned}
+    for c in found:
+        c["workspace"] = workspace_of.get(c["article_id"])
     return render_template(
         "discover.html", path=path, source="kb", product_line=product_line,
         scanned_count=len(scanned), found=found,
+        discovery=discovery, indexed=indexed, index_status=_index_status(),
     )
 
 

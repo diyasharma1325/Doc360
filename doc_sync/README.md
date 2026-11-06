@@ -43,6 +43,7 @@ MVP.
 | `draft_writer.py` | 4 | Only file that writes to Document360. Checks for an existing draft FIRST, then forks the article into a new draft version and writes into that; never publishes |
 | `verify.py` | 4 | Cheap post-write checks (old text gone, new text present, HTML intact, no images lost), shown to the reviewer before they decide |
 | `review_queue.py` | 5 | JSON-backed pending/approved/rejected/merge_conflict queue |
+| `gemini_call.py` | 2-3 | Every Gemini call goes through here: retries, a per-call token report, and the opt-in local response cache (`DOC_SYNC_LLM_CACHE=1`) |
 | `mock_d360.py` | — | Local file-backed stand-in for Document360, including the fork; current default target |
 | `pipeline.py` | orchestrator | `run` and `review` CLI commands |
 | `../core/workspaces.py` | — | The six live workspaces Doc Sync may read from or write to. Fails closed |
@@ -110,6 +111,25 @@ narrows it to one workspace).
 `review approve`/`reject` only updates the queue's own record — it does
 not call Document360 again. Publishing a written draft, and discarding a
 rejected one, both stay manual actions you take directly in Document360.
+
+## Saving tokens while testing
+
+Every Gemini call prints what it spent (`in / out, of it thinking`).
+To replay instead of re-spending, set `DOC_SYNC_LLM_CACHE=1`:
+
+```
+DOC_SYNC_LLM_CACHE=1 python3 doc_sync/pipeline.py run --change-note ...
+DOC_SYNC_LLM_CACHE=1 python3 doc_sync/webapp.py
+```
+
+A request that is exactly the same as one already sent (same change
+note, same article content, same prompt and reference files, same
+model settings) is answered from `data/llm_cache/` at 0 tokens; any
+difference makes a real call. It is off by default, so leave it unset
+for a live demo. Delete `data/llm_cache/` to start fresh.
+
+Gemini's own context caching is not used: this key is on the free tier,
+whose cached-content storage limit is 0 (refused on 2026-11-06).
 
 ## Document360 API behavior — verified 2026-11-04
 
@@ -251,6 +271,14 @@ in the pipeline six times larger. Index discovery addresses both:
    doesn't contain it yet), `notes` and `unaffected_content_types` —
    exclusion language like "Pop-ups did NOT move" is what once mined
    wrong keywords into discovery.
+   An article must also mention the feature itself — one of the
+   affected content types, a change's content type, or the feature area
+   (slug dashes read as spaces) — and that match counts twice as much as
+   the rest of the wording. Without this, everyday words ("display",
+   "text", "dashboard", each in a third of all articles) decided the
+   ranking and pop-up or Mirror articles that never mention the feature
+   filled the shortlist (2026-11-06). If no article mentions the feature
+   names at all, the search falls back to the whole note's wording.
 3. Each workspace is searched separately and capped at 12, so DAP for
    Web (about half of all articles) can't crowd the others out; the
    merged list is cut to the best 40.

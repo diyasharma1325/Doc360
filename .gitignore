@@ -9,3 +9,6 @@ __pycache__/
 # Local knowledge index built by doc_sync/kb_index.py - rebuildable, never committed
 doc_sync/data/knowledge.db
 doc_sync/data/knowledge.db.building
+
+# Local Gemini response cache (doc_sync/gemini_call.py, DOC_SYNC_LLM_CACHE=1)
+doc_sync/data/llm_cache/

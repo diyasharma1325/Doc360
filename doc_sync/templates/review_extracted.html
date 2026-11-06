@@ -36,6 +36,8 @@
   <label>Notes</label>
   <textarea name="notes">{{ note.notes }}</textarea>
 
+  {% include "_discovery_picker.html" %}
+
   <button type="submit">Confirm and search for candidates</button>
 </form>
 {% endblock %}
