@@ -38,7 +38,7 @@ MVP.
 | `change_note.py` | 1 | Defines and validates the change-note shape, including the `product_lines` list |
 | `tag_map.py` | 2 (state) | Optional feature-area -> article-id cache, hand-seeded; never required |
 | `candidates.py` | 2 | Looks up candidates from the tag map (fuzzy-match fallback on `feature_area` typos); returns `[]`, not an error, when there's no confident match, so `pipeline.py` can fall back to a live search |
-| `kb_search.py` | 2 | Live search, two modes. **titles** (default): walks one real Document360 workspace and semantically triages every title against the change note (one model call). **index** (opt-in): searches article bodies across all six live workspaces with `kb_index.py`, then triages only that shortlist. `pipeline.py` runs this automatically whenever `candidates.py` finds no tag_map entry — see "Live KB search" and "Index discovery" below |
+| `kb_search.py` | 2 | Live search, scoped to the change note's product lines (see "Discovery scope" below), two modes. **titles** (default): walks each workspace in scope and semantically triages every title against the change note (one model call per workspace). **index** (opt-in): searches article bodies in scope with `kb_index.py`, then triages only that shortlist. `pipeline.py` runs this automatically whenever `candidates.py` finds no tag_map entry — see "Live KB search" and "Index discovery" below |
 | `kb_index.py` | 2 (state) | Local full-text index of every published article body in the six live workspaces (`data/knowledge.db`, git-ignored). `build` (~30-40 min, read-only), `status`, `search`. Built all-or-nothing |
 | `kb_search_prompt.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
 | `assess.py` | 3 | **Claude path — default**, through `claude_call.py`; no API key needed |
@@ -119,7 +119,8 @@ Still to come: the candidate plan, approval and article writes recorded
 on the ticket, the Jira-style artifact, and a `doc-sync` skill that drives
 the whole run. Until then, run discovery and assessment on the run's
 change note with `pipeline.py run --change-note doc_sync/runs/<name>/change_note.json`
-(discovery still searches only the first product line).
+(discovery searches every product line the ticket named; see "Discovery
+scope" below).
 
 ## Before your first run
 
@@ -159,9 +160,34 @@ python3 doc_sync/pipeline.py review reject <item_id>
 The `run` command above defaults to `--provider claude` against the mock
 archive — add `--live` once real Document360 access is available, and
 `--provider gemini` to use the Gemini fallback for triage and assessment. Add
-`--discovery index` to search all six live workspaces with the knowledge
-index instead of walking one workspace's titles (`--product-line` then
-narrows it to one workspace).
+`--discovery index` to search article bodies with the knowledge index
+instead of triaging every title. Either way the search covers the change
+note's product lines; `--product-lines "DAP for Web, DAP for Desktop"`
+overrides them for one run.
+
+### Discovery scope
+
+The workspaces searched are the same rule in both modes
+(`kb_search.resolve_scope()`), since 2026-11-06:
+
+1. `--product-lines` on the command line, if given (comma-separated);
+2. else the change note's own `product_lines`: on a ticket run, the ones
+   the writer named, which intake requires;
+3. else the mode's old default: DAP for Web for titles, all six for index.
+
+Every name is checked against the six live workspaces, so a scope can never
+include Archived or another non-live workspace. Every candidate record
+carries the workspace it came from.
+
+**Titles mode makes one triage call per workspace**, each with that
+workspace's own product reference files, rather than one call over a
+merged listing: DAP for Web alone is ~1,400 titles (~120k prompt tokens),
+and a merged listing would go past what has been tested. Measured on
+2026-11-06 for a Web + Desktop ticket: 1,933 titles, two calls, ~$0.82,
+101 candidates. Index mode on the same ticket: 24 shortlisted, one call,
+~$0.13, 12 candidates. Titles sees only titles, so for a broad feature it
+over-includes by design; the candidate approval step is where that list
+gets cut.
 
 `review approve`/`reject` only updates the queue's own record — it does
 not call Document360 again. Publishing a written draft, and discarding a
@@ -286,10 +312,10 @@ one model call being thorough.
 Run it standalone:
 
 ```
-python3 doc_sync/kb_search.py doc_sync/data/changes/my_change.json --product-line "DAP for Web"
+python3 doc_sync/kb_search.py doc_sync/runs/<name>/change_note.json [--discovery index] [--product-lines "DAP for Web"]
 ```
 
-Or just run the pipeline normally — `pipeline.py run --change-note ... [--product-line NAME] [--only ids] [--limit N]`
+Or just run the pipeline normally — `pipeline.py run --change-note ... [--product-lines NAMES] [--only ids] [--limit N]`
 falls back to it automatically whenever tag_map has nothing for that
 feature area. Either way it only reads for discovery — no queue entries,
 no tag_map changes. If a flagged article goes on to get a draft written
@@ -345,12 +371,13 @@ in the pipeline six times larger. Index discovery addresses both:
    names at all, the search falls back to the whole note's wording.
    "Popups"/"Popup" also match the hyphenated "Pop-ups" most articles
    use.
-3. Each workspace is searched separately and capped at 12, so DAP for
+3. Only the workspaces in scope are searched (see "Discovery scope").
+   Each is searched separately and capped at 12, so DAP for
    Web (about half of all articles) can't crowd the others out; the
    merged list is cut to the best 40.
    Exception: when the feature's own name is rare (30 articles or
    fewer, e.g. "display name" in 28), every article naming it goes on
-   the shortlist first, whatever its workspace, and the rest is filled
+   the shortlist first, whatever its workspace in scope, and the rest is filled
    as above. The per-workspace cap otherwise cut 20 of the 26 DAP for
    Web articles naming "display name" (2026-11-06). A common name
    ("smart tips", 315) or one matching nothing leaves the search as is.
@@ -365,11 +392,13 @@ included keyword hits unconditionally; here every hit is still only a
 candidate the model has to accept, with the excerpt to judge it by.
 
 Two trade-offs, both open to revisit after comparison runs:
-- **No product reference files in index-mode triage.** Its shortlist
-  spans up to six products whose files total ~175 KB, which would put
-  back the prompt size the shortlist exists to cut; the excerpts carry
-  the concrete text instead. Assessment still loads each article's own
-  product files.
+- **Product reference files in index-mode triage only within 90 KB.**
+  Since 2026-11-06 the triage call loads the reference files for the
+  workspaces in scope when they total 90 KB or less (Web + Desktop: 65 KB;
+  all four DAP surfaces: 102 KB; all six: 177 KB). Above that it triages on
+  the excerpts alone, as before, so a wide scope doesn't put back the
+  prompt size the shortlist exists to cut. Assessment still loads each
+  article's own product files.
 - **The index holds each article's LATEST version** — for an article
   with a pending draft, the draft's text. Harmless for discovery, since
   such an article is flagged for a manual merge anyway.

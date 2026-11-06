@@ -79,6 +79,10 @@ INDEX_STALE_AFTER_HOURS = 48
 # search decides as usual. Kept below INDEX_SHORTLIST_MAX so other matches
 # always get some slots.
 INDEX_RARE_FEATURE_MAX = 30
+# Index-mode triage carries the product reference files for the workspaces
+# searched only up to this size (see _load_prompt). Web + Desktop: 65 KB;
+# all four DAP surfaces: 102 KB; all six: 177 KB.
+INDEX_PRODUCT_CONTEXT_MAX_BYTES = 90_000
 
 # Prepended to the triage request in "index" mode only. kb_search_prompt.md
 # describes a full title list, which a shortlist isn't — saying so here,
@@ -132,7 +136,9 @@ CANDIDATES_SCHEMA = {
 }
 
 
-def _load_prompt(product_line=None, include_products=True):
+def _load_prompt(product_lines=None, include_products=True):
+    """kb_search_prompt.md plus, when `include_products`, the reference
+    files for `product_lines` (a list; None or [] means DAP for Web's)."""
     with open(PROMPT_PATH) as f:
         parts = [f.read()]
     # Product context (2026-11-02), same files and same reasoning as
@@ -146,14 +152,25 @@ def _load_prompt(product_line=None, include_products=True):
     # adding more context here is a real cost, not a free improvement to
     # assume works.
     #
-    # "index" mode passes include_products=False. Its shortlist spans up to
-    # six workspaces, and their reference files total ~175 KB — loading
-    # them all would put back the prompt size the shortlist exists to cut,
-    # while the shortlist's excerpts already carry the concrete text.
-    # Revisit once index mode's results have been compared with "titles".
+    # "index" mode loads the files for the workspaces it searched only when
+    # they total INDEX_PRODUCT_CONTEXT_MAX_BYTES or less (2026-11-06). All six
+    # total ~175 KB, which would put back the prompt size the shortlist exists
+    # to cut; a ticket scoped to one or two product lines (Web + Desktop is
+    # 65 KB) fits, and gets the same grounding "titles" mode has.
     if include_products:
-        parts.extend(product_context.prompt_parts(product_line))
+        parts.extend(product_context.prompt_parts_for_lines(product_lines))
     return "\n".join(parts)
+
+
+def _index_product_lines(names):
+    """The product lines whose reference files index-mode triage loads:
+    `names` if their files fit INDEX_PRODUCT_CONTEXT_MAX_BYTES, else none."""
+    size = product_context.size_of(product_context.files_for_lines(names))
+    if size <= INDEX_PRODUCT_CONTEXT_MAX_BYTES:
+        return list(names)
+    print(f"    (index triage: product reference for {len(names)} workspace(s) is {size // 1000} KB, over "
+          f"{INDEX_PRODUCT_CONTEXT_MAX_BYTES // 1000} KB — triaging on the excerpts alone)")
+    return None
 
 
 def _resolve_project_version_id(product_line):
@@ -221,16 +238,17 @@ def _listing_line(a):
     return line
 
 
-def triage(change_note, articles, shortlist=False, product_line=None,
-           provider=claude_call.DEFAULT_PROVIDER):
+def triage(change_note, articles, shortlist=False, product_lines=None, include_products=True,
+           provider=claude_call.DEFAULT_PROVIDER, label="triage"):
     """One model call: given the full article list (titles only — no
     content fetched yet), ask which are plausibly affected. Returns the
     list of {article_id, title, reason} dicts the model reported.
     `shortlist=True` marks `articles` as an "index" mode shortlist rather
-    than a whole workspace (see _SHORTLIST_NOTE). `product_line` picks the
-    product reference files ("titles" mode only; default DAP for Web).
-    `provider` is "claude" (default, claude -p) or "gemini" (fallback);
-    both get the same system prompt, request and schema."""
+    than a whole workspace (see _SHORTLIST_NOTE). `product_lines` picks the
+    product reference files (default DAP for Web's); `include_products=False`
+    leaves them out. `provider` is "claude" (default, claude -p) or
+    "gemini" (fallback); both get the same system prompt, request and
+    schema. `label` names the call in the token report."""
     listing = "\n".join(_listing_line(a) for a in articles)
     note_lines = [
         "Change note:",
@@ -262,20 +280,20 @@ def triage(change_note, articles, shortlist=False, product_line=None,
     prompt = "\n".join(note_lines) + f"\n\nKnowledge base articles ({len(articles)} total):\n{listing}"
     if shortlist:
         prompt = _SHORTLIST_NOTE + prompt
-    system = _load_prompt(product_line, include_products=not shortlist)
+    system = _load_prompt(product_lines, include_products=include_products)
 
     if provider == "claude":
         result = claude_call.generate(
-            system=system, user=prompt, schema=CANDIDATES_SCHEMA, label="triage",
+            system=system, user=prompt, schema=CANDIDATES_SCHEMA, label=label,
             max_tokens=TRIAGE_MAX_OUTPUT_TOKENS,
         )
         return list(result.get("candidates", []))
     if provider != "gemini":
         raise ValueError(f"provider must be one of {claude_call.PROVIDERS}, got {provider!r}")
-    return _triage_gemini(system, prompt)
+    return _triage_gemini(system, prompt, label)
 
 
-def _triage_gemini(system, prompt):
+def _triage_gemini(system, prompt, label="triage"):
     """The Gemini fallback for triage(), unchanged from when Gemini was the
     only provider. Imported lazily, so the Claude path never needs
     google-genai installed."""
@@ -314,7 +332,7 @@ def _triage_gemini(system, prompt):
         ),
     )
 
-    response = gemini_call.generate(gclient, GEMINI_MODEL, prompt, config, "triage")
+    response = gemini_call.generate(gclient, GEMINI_MODEL, prompt, config, label)
 
     candidates_out = response.candidates or []
     if not candidates_out or not getattr(candidates_out[0].content, "parts", None):
@@ -366,14 +384,33 @@ def index_available(db_path=kb_index.DEFAULT_DB_PATH):
     return st.get("exists", False) and "error" not in st
 
 
-def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAULT_DB_PATH,
+def resolve_scope(change_note, product_lines=None, discovery=DEFAULT_DISCOVERY):
+    """The live workspaces discovery searches, by display name, in the
+    allow-list's spelling: `product_lines` (an explicit override, e.g.
+    --product-lines) if given, else the change note's own `product_lines`
+    (a ticket's, required at intake), else the mode's default: DAP for Web
+    for "titles", all six for "index". Raises ValueError on a name that is
+    not a live workspace."""
+    names = list(product_lines or getattr(change_note, "product_lines", None) or [])
+    if not names:
+        return [DEFAULT_PRODUCT_LINE] if discovery == "titles" else workspaces.names()
+    out = []
+    for name in names:
+        version_id = workspaces.id_for_name(name)
+        if version_id is None:
+            raise ValueError(f"{name!r} is not a live Document360 workspace. Live workspaces: {workspaces.names()}")
+        if workspaces.LIVE_WORKSPACES[version_id] not in out:
+            out.append(workspaces.LIVE_WORKSPACES[version_id])
+    return out
+
+
+def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB_PATH,
                             provider=claude_call.DEFAULT_PROVIDER):
-    """"index" mode: full-text search across all six live workspaces (or
-    just `workspace`, by display name), balanced per workspace, then one
-    triage call over the shortlist. Same return shape as
+    """"index" mode: full-text search across the workspaces in `scope` (a
+    list of live workspace names; None means all six), balanced per
+    workspace, then one triage call over the shortlist. Same return shape as
     find_candidates_live(): (article_ids, candidate_records, shortlist)."""
-    if workspace and workspaces.id_for_name(workspace) is None:
-        raise ValueError(f"{workspace!r} is not a live Document360 workspace. Live workspaces: {workspaces.names()}")
+    names = resolve_scope(change_note, scope, discovery="index") if scope else workspaces.names()
     st = kb_index.status(db_path)
     if st.get("age_hours", 0) > INDEX_STALE_AFTER_HOURS:
         print(f"    (knowledge index is {st['age_hours']:.0f}h old, built {st['built_at']}; "
@@ -381,7 +418,6 @@ def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAUL
 
     query = _index_query(change_note)
     focus = _index_focus(change_note)
-    names = [workspace] if workspace else workspaces.names()
 
     def run(focus):
         hits = []
@@ -404,9 +440,10 @@ def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAUL
     # name" while other workspaces filled their slots with weak matches
     # (2026-11-06). Applying this only to RARE names leaves cross-product
     # changes, whose name is common or matches nothing, as they were.
+    # Counted and searched within the same scope as the rest.
     feature = re.sub(r"[-_]+", " ", change_note.feature_area or "").strip()
-    if feature and 0 < kb_index.phrase_count(feature, workspace, db_path) <= INDEX_RARE_FEATURE_MAX:
-        direct = kb_index.search(query, k=INDEX_RARE_FEATURE_MAX, workspace=workspace, db_path=db_path, focus=[feature])
+    if feature and 0 < kb_index.phrase_count(feature, names, db_path) <= INDEX_RARE_FEATURE_MAX:
+        direct = kb_index.search(query, k=INDEX_RARE_FEATURE_MAX, workspace=names, db_path=db_path, focus=[feature])
         direct_ids = {h["article_id"] for h in direct}
         hits = direct + [h for h in hits if h["article_id"] not in direct_ids]
     shortlist = [{
@@ -420,8 +457,34 @@ def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAUL
     if not shortlist:
         return [], [], []
 
-    kept = _only_shown(triage(change_note, shortlist, shortlist=True, provider=provider), shortlist)
+    product_lines = _index_product_lines(names)
+    found = triage(change_note, shortlist, shortlist=True, product_lines=product_lines,
+                   include_products=product_lines is not None, provider=provider)
+    kept = _with_workspace(_only_shown(found, shortlist), shortlist)
     return [c["article_id"] for c in kept], kept, shortlist
+
+
+def find_candidates_titles(change_note, scope, client=None, provider=claude_call.DEFAULT_PROVIDER):
+    """"titles" mode: for EACH workspace in `scope`, walk its full title
+    list and triage it in its own call, with that workspace's product
+    reference files. One call per workspace, not one merged listing: DAP
+    for Web alone is ~1,400 titles (~112k prompt tokens), and a merged
+    listing would grow past what has been tested, while giving every
+    workspace's titles one product's context. Same return shape as
+    find_candidates_live()."""
+    client = client or Document360Client()
+    all_articles, found = [], []
+    for name in scope:
+        articles = fetch_kb_articles(client, product_line=name)
+        for a in articles:
+            a["workspace"] = name
+        print(f"    ({name}: {len(articles)} article title(s) to triage)", flush=True)
+        label = "triage" if len(scope) == 1 else f"triage {name}"
+        picked = _only_shown(triage(change_note, articles, product_lines=[name], provider=provider,
+                                    label=label), articles)
+        found.extend(_with_workspace(picked, articles))
+        all_articles.extend(articles)
+    return [c["article_id"] for c in found], found, all_articles
 
 
 def _only_shown(found, shown_articles):
@@ -436,30 +499,45 @@ def _only_shown(found, shown_articles):
     return kept
 
 
-def find_candidates_live(change_note, client=None, project_version_id=None,
-                          product_line=DEFAULT_PRODUCT_LINE, discovery=DEFAULT_DISCOVERY,
-                          index_workspace=None, provider=claude_call.DEFAULT_PROVIDER):
-    """Discovery entry point used by pipeline.py's automatic KB fallback.
-    Returns (article_ids, full_candidate_records, all_articles_scanned).
-    `provider` picks the triage model: "claude" (default) or "gemini".
+def _with_workspace(found, shown_articles):
+    """Each candidate record with the workspace it came from, read off the
+    list it was picked from (never the model's word)."""
+    workspace_of = {a["id"]: a.get("workspace") for a in shown_articles}
+    return [{**c, "workspace": workspace_of.get(c["article_id"])} for c in found]
 
-    discovery="titles": walk the real `product_line` workspace, then
-    semantically triage it (one model call — see the module docstring).
-    discovery="index": search all six live workspaces' bodies locally
-    (`index_workspace` narrows to one) and triage the shortlist; falls
-    back to "titles" when no index has been built. `product_line` only
-    applies to "titles" mode — in "index" mode an unset narrowing means
-    every live workspace, not the default one."""
+
+def find_candidates_live(change_note, client=None, product_lines=None, discovery=DEFAULT_DISCOVERY,
+                         provider=claude_call.DEFAULT_PROVIDER):
+    """Discovery entry point used by pipeline.py's automatic KB fallback.
+    Returns (article_ids, full_candidate_records, all_articles_scanned);
+    each candidate record carries its `workspace`.
+
+    The SCOPE is the same rule for both modes (resolve_scope): the
+    `product_lines` override, else the change note's own product lines,
+    else the mode's default (DAP for Web for "titles", all six for "index").
+
+    discovery="titles": each workspace in scope walked and triaged in its
+    own call. discovery="index": the local knowledge index searched within
+    scope, then one triage call over the shortlist; falls back to "titles"
+    when no index has been built. `provider` picks the triage model:
+    "claude" (default) or "gemini"."""
     if discovery not in DISCOVERY_MODES:
         raise ValueError(f"discovery must be one of {DISCOVERY_MODES}, got {discovery!r}")
     if discovery == "index":
         if index_available():
-            return find_candidates_indexed(change_note, workspace=index_workspace, provider=provider)
+            return find_candidates_indexed(change_note, scope=resolve_scope(change_note, product_lines, "index"),
+                                           provider=provider)
         print("    (no knowledge index built yet — falling back to title-only discovery; "
               "build one with: python3 doc_sync/kb_index.py build)")
-    articles = fetch_kb_articles(client, project_version_id, product_line=product_line)
-    found = _only_shown(triage(change_note, articles, product_line=product_line, provider=provider), articles)
-    return [c["article_id"] for c in found], found, articles
+    scope = resolve_scope(change_note, product_lines, "titles")
+    return find_candidates_titles(change_note, scope, client=client, provider=provider)
+
+
+def parse_product_lines(text):
+    """"DAP for Web, DAP for Desktop" -> ["DAP for Web", "DAP for Desktop"];
+    None or blank -> None. Names are checked later, by resolve_scope()."""
+    names = [n.strip() for n in (text or "").split(",") if n.strip()]
+    return names or None
 
 
 def main():
@@ -467,44 +545,30 @@ def main():
         description="Test run: search the real Document360 KB for articles affected by a change note. Read-only, makes no writes."
     )
     parser.add_argument("change_note_path")
-    parser.add_argument("--product-line", default=None,
-                         help=f"The real Document360 workspace to search, by display name. "
-                              f"'titles' mode: the one workspace walked (default: "
-                              f"{DEFAULT_PRODUCT_LINE!r}). 'index' mode: narrows the search to this "
-                              f"workspace (default: all six live workspaces).")
+    parser.add_argument("--product-lines", "--product-line", dest="product_lines", default=None,
+                         help="Comma-separated live workspaces to search, overriding the change note's "
+                              "own product_lines. Default: the change note's product lines, else "
+                              f"{DEFAULT_PRODUCT_LINE!r} for 'titles' and all six for 'index'.")
     parser.add_argument("--discovery", choices=DISCOVERY_MODES, default=DEFAULT_DISCOVERY,
-                         help="'titles' (default): triage every title in one workspace. 'index': "
-                              "search article bodies across all six live workspaces with the local "
-                              "knowledge index, then triage that shortlist.")
+                         help="'titles' (default): triage every title in each workspace in scope, one "
+                              "call per workspace. 'index': search article bodies in scope with the "
+                              "local knowledge index, then triage that shortlist.")
     parser.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER,
                          help="Model for the triage call: 'claude' (default, claude -p on your Claude "
                               "Code login) or 'gemini' (fallback, needs GEMINI_API_KEY).")
     args = parser.parse_args()
 
     change_note = load_change_note(args.change_note_path)
+    override = parse_product_lines(args.product_lines)
+    mode = args.discovery if (args.discovery == "titles" or index_available()) else "titles"
+    scope = resolve_scope(change_note, override, mode)
+    print(f"Discovery: {mode}, scope: {', '.join(scope)}")
 
     t0 = time.time()
-    if args.discovery == "index" and index_available():
-        scope = args.product_line or "all six live workspaces"
-        print(f"Searching the local knowledge index ({scope}), then triaging the shortlist...")
-        _, found, scanned = find_candidates_indexed(change_note, workspace=args.product_line,
-                                                    provider=args.provider)
-        print(f"  Shortlisted {len(scanned)} article(s). Total: {time.time() - t0:.1f}s.\n")
-    else:
-        if args.discovery == "index":
-            print("No knowledge index built yet — falling back to title-only discovery "
-                  "(build one with: python3 doc_sync/kb_index.py build).")
-        product_line = args.product_line or DEFAULT_PRODUCT_LINE
-        print(f"Walking the real Document360 {product_line!r} workspace (read-only)...")
-        articles = fetch_kb_articles(product_line=product_line)
-        t1 = time.time()
-        print(f"  {len(articles)} article(s) found in {t1 - t0:.1f}s.")
-
-        print("Running semantic triage against the change note...")
-        found = _only_shown(triage(change_note, articles, product_line=product_line, provider=args.provider),
-                            articles)
-        t2 = time.time()
-        print(f"  Triage took {t2 - t1:.1f}s. Total: {t2 - t0:.1f}s.\n")
+    _, found, scanned = find_candidates_live(change_note, product_lines=override, discovery=args.discovery,
+                                             provider=args.provider)
+    print(f"  {'Shortlisted' if mode == 'index' else 'Scanned'} {len(scanned)} article(s). "
+          f"Total: {time.time() - t0:.1f}s.\n")
 
     if not found:
         print("No candidate articles found.")
@@ -512,7 +576,7 @@ def main():
 
     print(f"{len(found)} candidate article(s):")
     for c in found:
-        print(f"  [{c['article_id']}] {c['title']}")
+        print(f"  [{c['article_id']}] {c['title']}  ({c.get('workspace') or '?'})")
         print(f"      {c['reason']}")
 
 

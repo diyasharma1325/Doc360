@@ -54,16 +54,42 @@ def files_for(product_line=None):
     return PRODUCT_FILES[DEFAULT_PRODUCT_LINE]
 
 
-def prompt_parts(product_line=None):
-    """The product sections to append to a system prompt, one string per
-    file, each headed `## <filename>` — the format both prompts used when
-    these files were hardcoded. Missing files are skipped."""
+def files_for_lines(product_lines):
+    """The reference filenames for several product lines, each file once
+    (dap-core.md is shared by all four DAP surfaces), in the order the lines
+    are given. An empty list means DAP for Web's, as files_for(None)."""
+    out = []
+    for line in product_lines or [None]:
+        for filename in files_for(line):
+            if filename not in out:
+                out.append(filename)
+    return out
+
+
+def size_of(filenames):
+    """Total size in bytes of the reference files that exist."""
+    return sum((THIS_DIR / f).stat().st_size for f in filenames if (THIS_DIR / f).exists())
+
+
+def _parts(filenames):
     parts = []
-    for filename in files_for(product_line):
+    for filename in filenames:
         path = THIS_DIR / filename
         if path.exists():
             parts.append(f"\n\n## {filename}\n\n" + path.read_text())
     return parts
+
+
+def prompt_parts(product_line=None):
+    """The product sections to append to a system prompt, one string per
+    file, each headed `## <filename>` — the format both prompts used when
+    these files were hardcoded. Missing files are skipped."""
+    return _parts(files_for(product_line))
+
+
+def prompt_parts_for_lines(product_lines):
+    """prompt_parts() for several product lines, each file once."""
+    return _parts(files_for_lines(product_lines))
 
 
 def product_line_of(article, change_note=None):

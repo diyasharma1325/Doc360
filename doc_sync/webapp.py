@@ -183,15 +183,12 @@ def discover_candidates():
     # Falls back to "titles" when no index is built, and the page says so.
     discovery = _discovery_mode(request.args)
     indexed = discovery == "index" and kb_search.index_available()
-    product_line = note.product_line or kb_search.DEFAULT_PRODUCT_LINE
-    _, found, scanned = kb_search.find_candidates_live(note, product_line=product_line, discovery=discovery)
-    # An "index" shortlist entry carries its workspace; triage's own
-    # records don't, so it's looked up by id for display.
-    workspace_of = {a["id"]: a.get("workspace") for a in scanned}
-    for c in found:
-        c["workspace"] = workspace_of.get(c["article_id"])
+    # The note's product lines scope both modes (kb_search.resolve_scope);
+    # every candidate record carries its workspace.
+    scope = kb_search.resolve_scope(note, None, "index" if indexed else "titles")
+    _, found, scanned = kb_search.find_candidates_live(note, discovery=discovery)
     return render_template(
-        "discover.html", path=path, source="kb", product_line=product_line,
+        "discover.html", path=path, source="kb", product_line=", ".join(scope),
         scanned_count=len(scanned), found=found,
         discovery=discovery, indexed=indexed, index_status=_index_status(),
     )
@@ -203,11 +200,11 @@ def run_change():
     # already picked which discovered candidates (tag_map or live KB) are
     # worth spending an assessment call on.
     path = request.form["path"]
-    product_line = request.form.get("product_line") or None
     only_ids = request.form.getlist("article_id") or None
 
     try:
-        results = pipeline.run(path, product_line=product_line, only_ids=only_ids)
+        # Explicit ids skip discovery, so no scope is needed here.
+        results = pipeline.run(path, only_ids=only_ids)
         error = None
     except Exception as exc:
         results, error = None, str(exc)

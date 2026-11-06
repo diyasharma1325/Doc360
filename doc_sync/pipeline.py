@@ -43,8 +43,11 @@ from change_note import load_change_note
 from d360_client import Document360Client
 
 
-def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, product_line=None,
+def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, product_lines=None,
         only_ids=None, limit=None, discovery="titles"):
+    """`product_lines` (a list of live workspace names) overrides the change
+    note's own product lines as the discovery scope; see
+    kb_search.resolve_scope()."""
     # Imported here, not at module level, so the default "claude" path
     # never requires google-genai to be installed.
     if provider == "gemini":
@@ -81,27 +84,21 @@ def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, pro
             real_reads = False
         else:
             import kb_search
-            # --product-line (explicit override) beats the change note's own
-            # structured `product_line` field beats kb_search.py's default —
-            # a structured note no longer needs a human to separately
-            # remember to pass this, which is the same mistake that caused
-            # the wrong-workspace bug in the first place.
-            kb_product_line = product_line or change_note.product_line or kb_search.DEFAULT_PRODUCT_LINE
-            # "index" discovery searches every live workspace unless
-            # --product-line narrows it: the change note's own product_line
-            # is NOT used as a filter there, since finding the articles a
-            # change breaks in OTHER workspaces is the point of that mode.
+            # Scope (2026-11-06): --product-lines (explicit override) beats
+            # the change note's own product_lines (a ticket's, required at
+            # intake) beats the mode's default — DAP for Web for "titles",
+            # all six for "index". The same rule for both modes: the
+            # workspaces the writer named are the ones searched.
             indexed = discovery == "index" and kb_search.index_available()
-            scope = (product_line or "all six live workspaces") if indexed else kb_product_line
+            scope = kb_search.resolve_scope(change_note, product_lines, "index" if indexed else "titles")
             article_ids, found, scanned = kb_search.find_candidates_live(
-                change_note, product_line=kb_product_line,
-                discovery=discovery, index_workspace=product_line, provider=provider,
+                change_note, product_lines=product_lines, discovery=discovery, provider=provider,
             )
             print(f"No tag_map entry for feature_area={change_note.feature_area!r} — ran a live KB "
-                  f"search ({'index' if indexed else 'titles'}) under {scope!r} instead: scanned "
+                  f"search ({'index' if indexed else 'titles'}) in {', '.join(scope)}: scanned "
                   f"{len(scanned)} real article(s), found {len(article_ids)} candidate(s):")
             for c in found:
-                print(f"    [{c['article_id']}] {c['title']} — {c['reason']}")
+                print(f"    [{c['article_id']}] {c['title']} ({c.get('workspace') or '?'}) — {c['reason']}")
             real_reads = True
         if limit is not None:
             article_ids = article_ids[:limit]
@@ -211,20 +208,17 @@ def main():
     run_p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER,
                         help="Model for triage and assessment: 'claude' (default — claude -p on your "
                              "Claude Code login, no API key) or 'gemini' (fallback, needs GEMINI_API_KEY)")
-    run_p.add_argument("--product-line", default=None,
-                        help="The real Document360 workspace to search, by display name, if "
-                             "tag_map.json has no entry for this change note's feature_area and a "
-                             "live KB search is needed (default: the change note's own product_line "
-                             "field, else kb_search.py's DEFAULT_PRODUCT_LINE, currently 'DAP for "
-                             "Web'). Each product line is a fully separate workspace with its own "
-                             "article set. Ignored when tag_map already has a match. With "
-                             "--discovery index, narrows the search to this one workspace "
-                             "instead (default there: all six live workspaces).")
+    run_p.add_argument("--product-lines", "--product-line", dest="product_lines", default=None,
+                        help="Comma-separated live workspaces to search (e.g. 'DAP for Web, DAP for "
+                             "Desktop'), overriding the change note's own product_lines. Default: "
+                             "the change note's product lines (a ticket run always has them), else "
+                             "'DAP for Web' for --discovery titles and all six for --discovery index. "
+                             "Ignored when tag_map already has a match.")
     run_p.add_argument("--discovery", choices=["titles", "index"], default="titles",
                         help="How the live KB search finds candidates when tag_map has no entry. "
-                             "'titles' (default): triage every title in one workspace. 'index': "
-                             "search article bodies across all six live workspaces with the local "
-                             "knowledge index (python3 doc_sync/kb_index.py build), then triage "
+                             "'titles' (default): triage every title in each workspace in scope, one "
+                             "call per workspace. 'index': search article bodies in scope with the "
+                             "local knowledge index (python3 doc_sync/kb_index.py build), then triage "
                              "that shortlist; falls back to 'titles' if no index is built.")
     run_p.add_argument("--only", default=None,
                         help="Comma-separated article ids — assess only these from the discovered "
@@ -239,10 +233,11 @@ def main():
 
     args = parser.parse_args()
     if args.command == "run":
+        import kb_search
         only_ids = [a.strip() for a in args.only.split(",")] if args.only else None
         run(args.path, live=args.live, provider=args.provider,
-            product_line=args.product_line, only_ids=only_ids, limit=args.limit,
-            discovery=args.discovery)
+            product_lines=kb_search.parse_product_lines(args.product_lines), only_ids=only_ids,
+            limit=args.limit, discovery=args.discovery)
     elif args.command == "review":
         review(args.action, args.item_id)
 
