@@ -1,11 +1,16 @@
-"""MVP orchestrator: run a change note through candidate lookup,
-assessment, and draft generation (stages 1-4 wired end to end), then work
-the review queue (stage 5) from the same CLI.
+"""The original change-note CLI: run a change note through candidate
+lookup, assessment, draft generation and verification, then work the
+review queue from the same CLI. Ticket runs (ticket_run.py, the doc-sync
+skill) are the main entry point now; this stays for one-off runs on a
+change-note file and for the mock archive.
 
 Current defaults, as of this standing decision — not a fallback, the
 actual setup until told otherwise:
-  - Gemini is the PRIMARY provider (assess_gemini.py), not a substitute.
-    Pass --provider claude once ANTHROPIC_API_KEY access is confirmed.
+  - Claude is the DEFAULT provider for triage and assessment, called
+    through `claude -p` on the writer's Claude Code login (claude_call.py,
+    assess.py) — no ANTHROPIC_API_KEY needed. Gemini (assess_gemini.py,
+    gemini_call.py) is kept as a fallback: pass --provider gemini.
+    (2026-11-06; Gemini was the default before.)
   - The local mock archive (mock_d360.py) is the default write target,
     since this environment's writes to the real Document360 API are
     blocked regardless of --live. Discovery and assessment reads can
@@ -21,8 +26,8 @@ actual setup until told otherwise:
     (hit 2026-10-29). A feature area never has to be pre-seeded now —
     tag_map is purely an optional, free shortcut for ones that already are.
 
-Stages 6 (verify) and 7 (tag-map learning / run logging) are out of scope
-for the MVP — see the file structure notes in DOC_SYNC_README.md.
+Tag-map learning (recording confirmed candidates back into tag_map.json)
+is not built. See doc_sync/README.md for the whole pipeline.
 """
 import argparse
 import sys
@@ -31,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))  # d360_client.py lives in ../core
 
 import candidates
+import claude_call
 import draft_writer
 import mock_d360
 import review_queue
@@ -39,15 +45,19 @@ from change_note import load_change_note
 from d360_client import Document360Client
 
 
-def run(change_note_path, live=False, provider="gemini", product_line=None,
+def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, product_lines=None,
         only_ids=None, limit=None, discovery="titles"):
-    # Imported here, not at module level, so picking "claude" never
-    # requires google-genai to be installed, and vice versa.
+    """`product_lines` (a list of live workspace names) overrides the change
+    note's own product lines as the discovery scope; see
+    kb_search.resolve_scope()."""
+    # Imported here, not at module level, so the default "claude" path
+    # never requires google-genai to be installed.
     if provider == "gemini":
         from assess_gemini import assess_article
-    else:
+    elif provider == "claude":
         from assess import assess_article
-        print("(using --provider claude — confirm ANTHROPIC_API_KEY is set)")
+    else:
+        raise ValueError(f"provider must be one of {claude_call.PROVIDERS}, got {provider!r}")
 
     change_note = load_change_note(change_note_path)
 
@@ -57,10 +67,9 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
     if only_ids:
         # Explicit ids bypass discovery entirely — no reason to spend
         # kb_search.py's semantic-triage call re-deriving a candidate list
-        # the caller already has (webapp.py's /discover screen already
-        # ran it once; re-running it here to immediately throw most of it
-        # away was pure waste, and the exact bug that burned two quota
-        # calls on nothing on 2026-10-29). Checked against tag_map rather
+        # the caller already has (re-running it to immediately throw most
+        # of it away burned two quota calls on nothing on 2026-10-29).
+        # Checked against tag_map rather
         # than assumed real, so a confirmed tag_map selection (mock ids)
         # and a live-search selection (real ids) are both handled correctly
         # without the caller having to say which kind it's passing.
@@ -76,27 +85,21 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
             real_reads = False
         else:
             import kb_search
-            # --product-line (explicit override) beats the change note's own
-            # structured `product_line` field beats kb_search.py's default —
-            # a structured note no longer needs a human to separately
-            # remember to pass this, which is the same mistake that caused
-            # the wrong-workspace bug in the first place.
-            kb_product_line = product_line or change_note.product_line or kb_search.DEFAULT_PRODUCT_LINE
-            # "index" discovery searches every live workspace unless
-            # --product-line narrows it: the change note's own product_line
-            # is NOT used as a filter there, since finding the articles a
-            # change breaks in OTHER workspaces is the point of that mode.
-            indexed = discovery == "index" and kb_search.index_available()
-            scope = (product_line or "all six live workspaces") if indexed else kb_product_line
+            # Scope (2026-11-06): --product-lines (explicit override) beats
+            # the change note's own product_lines (a ticket's, required at
+            # intake) beats the mode's default — DAP for Web for "titles",
+            # all six for "index". The same rule for both modes: the
+            # workspaces the writer named are the ones searched.
+            mode = discovery if (discovery == "titles" or kb_search.index_available()) else "titles"
+            scope = kb_search.resolve_scope(change_note, product_lines, "titles" if mode == "titles" else "index")
             article_ids, found, scanned = kb_search.find_candidates_live(
-                change_note, product_line=kb_product_line,
-                discovery=discovery, index_workspace=product_line,
+                change_note, product_lines=product_lines, discovery=discovery, provider=provider,
             )
             print(f"No tag_map entry for feature_area={change_note.feature_area!r} — ran a live KB "
-                  f"search ({'index' if indexed else 'titles'}) under {scope!r} instead: scanned "
+                  f"search ({mode}) in {', '.join(scope)}: scanned "
                   f"{len(scanned)} real article(s), found {len(article_ids)} candidate(s):")
             for c in found:
-                print(f"    [{c['article_id']}] {c['title']} — {c['reason']}")
+                print(f"    [{c['article_id']}] {c['title']} ({c.get('workspace') or '?'}) — {c['reason']}")
             real_reads = True
         if limit is not None:
             article_ids = article_ids[:limit]
@@ -109,8 +112,8 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
     read_client = Document360Client() if real_reads else (None if live else mock_d360.MockDocument360Client())
     service = None if live else mock_d360.MockArticleService()
 
-    # Returned so callers other than this CLI (webapp.py) can render the
-    # outcome instead of scraping printed text. The prints below stay for
+    # Returned so a caller other than this CLI can use the outcome
+    # instead of scraping printed text. The prints below stay for
     # terminal use — this is additive, not a replacement.
     results = []
 
@@ -203,23 +206,22 @@ def main():
     run_p.add_argument("--change-note", required=True, dest="path")
     run_p.add_argument("--live", action="store_true",
                         help="Use the real Document360 API instead of the local mock archive (default: mock)")
-    run_p.add_argument("--provider", choices=["claude", "gemini"], default="gemini",
-                        help="Model backend for assessment (default: gemini — primary until ANTHROPIC_API_KEY is confirmed)")
-    run_p.add_argument("--product-line", default=None,
-                        help="The real Document360 workspace to search, by display name, if "
-                             "tag_map.json has no entry for this change note's feature_area and a "
-                             "live KB search is needed (default: the change note's own product_line "
-                             "field, else kb_search.py's DEFAULT_PRODUCT_LINE, currently 'DAP for "
-                             "Web'). Each product line is a fully separate workspace with its own "
-                             "article set. Ignored when tag_map already has a match. With "
-                             "--discovery index, narrows the search to this one workspace "
-                             "instead (default there: all six live workspaces).")
-    run_p.add_argument("--discovery", choices=["titles", "index"], default="titles",
+    run_p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER,
+                        help="Model for triage and assessment: 'claude' (default — claude -p on your "
+                             "Claude Code login, no API key) or 'gemini' (fallback, needs GEMINI_API_KEY)")
+    run_p.add_argument("--product-lines", "--product-line", dest="product_lines", default=None,
+                        help="Comma-separated live workspaces to search (e.g. 'DAP for Web, DAP for "
+                             "Desktop'), overriding the change note's own product_lines. Default: "
+                             "the change note's product lines (a ticket run always has them), else "
+                             "'DAP for Web' for --discovery titles and all six for --discovery index. "
+                             "Ignored when tag_map already has a match.")
+    run_p.add_argument("--discovery", choices=["titles", "index", "both"], default="titles",
                         help="How the live KB search finds candidates when tag_map has no entry. "
-                             "'titles' (default): triage every title in one workspace. 'index': "
-                             "search article bodies across all six live workspaces with the local "
-                             "knowledge index (python3 doc_sync/kb_index.py build), then triage "
-                             "that shortlist; falls back to 'titles' if no index is built.")
+                             "'titles' (default): triage every title in each workspace in scope, one "
+                             "call per workspace. 'index': search article bodies in scope with the "
+                             "local knowledge index (python3 doc_sync/kb_index.py build), then triage "
+                             "that shortlist; falls back to 'titles' if no index is built. 'both': "
+                             "index plus a strict title check on Haiku, merged (found_by).")
     run_p.add_argument("--only", default=None,
                         help="Comma-separated article ids — assess only these from the discovered "
                              "candidates, skipping the rest. For quota-limited live demos.")
@@ -233,10 +235,11 @@ def main():
 
     args = parser.parse_args()
     if args.command == "run":
+        import kb_search
         only_ids = [a.strip() for a in args.only.split(",")] if args.only else None
         run(args.path, live=args.live, provider=args.provider,
-            product_line=args.product_line, only_ids=only_ids, limit=args.limit,
-            discovery=args.discovery)
+            product_lines=kb_search.parse_product_lines(args.product_lines), only_ids=only_ids,
+            limit=args.limit, discovery=args.discovery)
     elif args.command == "review":
         review(args.action, args.item_id)
 

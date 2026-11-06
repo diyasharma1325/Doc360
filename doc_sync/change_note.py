@@ -5,12 +5,18 @@ Everything downstream reads off this shape.
 `old`/`new`/`summary` remain the required, always-present fields — a
 one-line change is still valid as just those. The fields below them are
 optional, additive structure for a change that touches several content
-types at once (the common case once a change note comes from a PRD via
-prd_intake.py rather than being hand-typed):
+types at once (the common case once a change note comes from a ticket via
+ticket_intake.py rather than being hand-typed):
 
-  - `product_line`: the real Document360 workspace this applies to (e.g.
-    "DAP for Web"), read directly by kb_search.py instead of requiring a
-    --product-line flag or a human remembering to set one.
+  - `product_lines`: the live Document360 workspaces this change ships in
+    (e.g. ["DAP for Web", "DAP for Desktop"]). Most changes span several,
+    so it is a list. On a ticket run it is REQUIRED: ticket_intake.py
+    extracts it from the ticket's description and stops the run if none
+    is named. A note saved before this field existed loads its single
+    `product_line` as a one-item list.
+  - `product_line`: the single-workspace field `product_lines` replaces.
+    Still read by discovery until it is switched to the list (intake
+    fills it with the first product line meanwhile).
   - `affected_content_types` / `unaffected_content_types`: explicit lists
     instead of prose. This is what fixed the two real bugs discovery hit
     before this existed: keywords silently mined from exclusion language
@@ -49,6 +55,7 @@ class ChangeNote:
     effective_date: str = ""  # ISO date the change goes/went live — optional, informational only
     notes: str = ""       # anything else worth telling the agent
     product_line: str = ""  # real Document360 workspace name, e.g. "DAP for Web"
+    product_lines: List[str] = field(default_factory=list)  # every live workspace the change ships in
     affected_content_types: List[str] = field(default_factory=list)
     unaffected_content_types: List[str] = field(default_factory=list)
     changes: List[ContentChange] = field(default_factory=list)
@@ -56,8 +63,8 @@ class ChangeNote:
 
 REQUIRED_FIELDS = ["feature_area", "summary", "old", "new"]
 # effective_date is optional and informational: nothing in discovery or
-# assessment depends on it, so the web forms no longer ask for it
-# (2026-11-06). prd_intake.py still records it when a PRD states one.
+# assessment depends on it. ticket_intake.py records it when the ticket or
+# an attachment states one.
 
 
 def load_change_note(path):
@@ -66,6 +73,8 @@ def load_change_note(path):
     missing = [k for k in REQUIRED_FIELDS if not data.get(k)]
     if missing:
         raise ValueError(f"{path} is missing required field(s): {', '.join(missing)}")
+    product_line = data.get("product_line", "")
+    product_lines = list(data.get("product_lines") or ([product_line] if product_line else []))
     return ChangeNote(
         feature_area=data["feature_area"],
         summary=data["summary"],
@@ -73,7 +82,8 @@ def load_change_note(path):
         new=data["new"],
         effective_date=data.get("effective_date", ""),
         notes=data.get("notes", ""),
-        product_line=data.get("product_line", ""),
+        product_line=product_line,
+        product_lines=product_lines,
         affected_content_types=list(data.get("affected_content_types") or []),
         unaffected_content_types=list(data.get("unaffected_content_types") or []),
         changes=[ContentChange(**c) for c in data.get("changes") or []],
@@ -98,6 +108,7 @@ def scaffold(path):
         "effective_date": "",
         "notes": "",
         "product_line": "",
+        "product_lines": [],
         "affected_content_types": [],
         "unaffected_content_types": [],
         "changes": [],

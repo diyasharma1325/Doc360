@@ -1,7 +1,11 @@
-"""Stage 3 (agent): reads one article's real content against a change note
-and decides whether it needs an edit — and if so, what the edit is. Calls
-Claude directly via the API; nothing here hands off to a separate agent
-session.
+"""Stage 3 (agent), Claude path — the DEFAULT provider: reads one
+article's real content against a change note and decides whether it needs
+an edit, and if so, what the edit is.
+
+Calls Claude through `claude -p` on the writer's Claude Code login
+(claude_call.py), so no ANTHROPIC_API_KEY is needed. assess_gemini.py is the
+fallback (`--provider gemini`); it reuses this module's prompt and input
+builders, so the two providers are never shown different inputs.
 """
 import html
 import re
@@ -14,33 +18,32 @@ THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parent
 sys.path.insert(0, str(REPO_ROOT / "core"))  # d360_client.py lives in ../core
 
-import anthropic
-
+import claude_call
 import product_context
 from d360_client import Document360Client
 
-MODEL = "claude-sonnet-5"
+MODEL = claude_call.DEFAULT_MODEL
 ROOT = THIS_DIR  # assess_prompt.md lives alongside this file
+
+# A flagged article comes back as its FULL corrected html_content, which can
+# run tens of KB — the same headroom assess_gemini.py gives it.
+MAX_OUTPUT_TOKENS = 32768
 
 MAX_IMAGES = 6  # cap per article on the image-src scan verify.py uses for its missing-image check
 IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\'>]+)["\']', re.IGNORECASE)
 
-ASSESS_TOOL = {
-    "name": "report_assessment",
-    "description": "Report whether the article needs a text edit for this change.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "needs_edit": {"type": "boolean"},
-            "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-            "rationale": {"type": "string", "description": "Why, in one or two sentences."},
-            "updated_html_content": {
-                "type": ["string", "null"],
-                "description": "Full corrected html_content. Required if needs_edit is true, otherwise null.",
-            },
+ASSESS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "needs_edit": {"type": "boolean"},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+        "rationale": {"type": "string", "description": "Why, in one or two sentences."},
+        "updated_html_content": {
+            "type": ["string", "null"],
+            "description": "Full corrected html_content. Required if needs_edit is true, otherwise null.",
         },
-        "required": ["needs_edit", "confidence", "rationale", "updated_html_content"],
     },
+    "required": ["needs_edit", "confidence", "rationale", "updated_html_content"],
 }
 
 
@@ -145,17 +148,15 @@ def assess_article(article_id, change_note, client=None):
 
     text = _build_change_note_text(change_note, html_content)
 
-    ai = anthropic.Anthropic()
-    response = ai.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        system=_load_system_prompt(product_context.product_line_of(article, change_note)),
-        tools=[ASSESS_TOOL],
-        tool_choice={"type": "tool", "name": "report_assessment"},
-        messages=[{"role": "user", "content": text}],
-    )
-
-    tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-    if tool_use is None:
-        raise AssessmentError(f"Claude did not return a tool call. stop_reason={response.stop_reason!r}")
-    return _assessment_from_result(tool_use.input, html_content)
+    try:
+        result = claude_call.generate(
+            system=_load_system_prompt(product_context.product_line_of(article, change_note)),
+            user=text,
+            schema=ASSESS_SCHEMA,
+            label="assess",
+            model=MODEL,
+            max_tokens=MAX_OUTPUT_TOKENS,
+        )
+    except claude_call.ClaudeCallError as exc:
+        raise AssessmentError(str(exc)) from exc
+    return _assessment_from_result(result, html_content)

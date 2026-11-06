@@ -1,6 +1,5 @@
 requests>=2.31
 python-dotenv>=1.0
-anthropic>=0.40
-google-genai>=1.0  # assess_gemini.py — primary provider for now
-flask>=3.0  # webapp.py — local input/output interface
+google-genai>=1.0  # Gemini fallback (--provider gemini) only; Claude runs via the claude CLI
 beautifulsoup4>=4.12  # kb_index.py — article HTML to searchable text
+pdfplumber>=0.11  # pdf_text.py — ticket PDF attachments to text for intake

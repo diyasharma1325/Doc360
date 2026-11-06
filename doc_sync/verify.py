@@ -2,9 +2,10 @@
 draft — not after human approval, deliberately, so the result is
 visible to the human as a confidence signal *before* they decide, not
 after. Re-fetches the article and checks a few cheap, high-signal things
-rather than attempting full HTML validation: did the old text actually
-get removed, did the new text actually land, is the HTML structurally
-intact, did an image silently disappear.
+rather than attempting full HTML validation: did old wording that was in
+the article word for word actually get removed, is the HTML structurally
+intact, did the content shrink suspiciously, did an image silently
+disappear.
 """
 from dataclasses import dataclass, field
 from typing import List
@@ -19,17 +20,28 @@ class VerificationResult:
     warnings: List[str] = field(default_factory=list)
 
 
+def _old_texts(change_note):
+    """Every `old` wording the change note gives: the per-content-type ones
+    when it has a `changes` list, else the single `old`."""
+    olds = [c.old for c in (change_note.changes or [])] or [change_note.old]
+    return [o.strip() for o in olds if o and o.strip()]
+
+
 def verify_article(article_id, change_note, before_html, client=None):
     client = client or Document360Client()
     after_html = client.get_article(article_id)["data"].get("html_content", "")
 
     warnings = []
 
-    if change_note.old and change_note.old in after_html:
-        warnings.append(f"Old text still present: {change_note.old!r}")
-
-    if change_note.new and change_note.new not in after_html:
-        warnings.append(f"Expected new text not found: {change_note.new!r}")
+    # A change note's old/new are usually summary sentences ("Users could
+    # not validate domains..."), not text copied from the article, so a
+    # literal check fired on nearly every draft (2026-11-06). Now: warn only
+    # when an old wording WAS in the article word for word and still is.
+    # There is no "new text present" check; an edit rewords to fit the
+    # article and can't be expected to contain the note's sentence.
+    for old in _old_texts(change_note):
+        if old in (before_html or "") and old in after_html:
+            warnings.append(f"Old text still present: {old!r}")
 
     if after_html.count("<") != after_html.count(">"):
         warnings.append("Mismatched '<'/'>' counts — HTML may be malformed or truncated")

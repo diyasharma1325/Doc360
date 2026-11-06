@@ -269,15 +269,23 @@ def _focus_query(phrases):
     return " OR ".join(f'"{p}"' for p in out)
 
 
+def _workspace_filter(workspace):
+    """SQL and params narrowing a query to one workspace name or a list of
+    them; ("", []) for None or an empty list (every workspace)."""
+    if not workspace:
+        return "", []
+    names = [workspace] if isinstance(workspace, str) else list(workspace)
+    return f" AND workspace IN ({', '.join('?' * len(names))})", names
+
+
 def phrase_count(phrase, workspace=None, db_path=DEFAULT_DB_PATH):
-    """How many indexed articles contain `phrase` as consecutive words."""
+    """How many indexed articles contain `phrase` as consecutive words.
+    `workspace` is one name, a list of names, or None for all."""
     match = _focus_query([phrase])
     if not match:
         return 0
-    sql, params = "SELECT count(*) FROM articles WHERE articles MATCH ?", [match]
-    if workspace:
-        sql += " AND workspace = ?"
-        params.append(workspace)
+    where, extra = _workspace_filter(workspace)
+    sql, params = "SELECT count(*) FROM articles WHERE articles MATCH ?" + where, [match] + extra
     conn = sqlite3.connect(db_path)
     try:
         return conn.execute(sql, params).fetchone()[0]
@@ -288,7 +296,7 @@ def phrase_count(phrase, workspace=None, db_path=DEFAULT_DB_PATH):
 def search(query, k=40, workspace=None, db_path=DEFAULT_DB_PATH, focus=None):
     """Up to `k` articles most relevant to `query`, best first (BM25,
     titles weighted above bodies), optionally narrowed to one live
-    workspace by name. Each result: {article_id, title, category_path,
+    workspace by name, or to a list of them. Each result: {article_id, title, category_path,
     workspace, version_id, url, snippet, score}, where `snippet` is the
     matching passage with hits in [brackets]. Raises FileNotFoundError if
     the index hasn't been built — callers decide whether to fall back.
@@ -323,9 +331,9 @@ def search(query, k=40, workspace=None, db_path=DEFAULT_DB_PATH, focus=None):
             "FROM articles WHERE articles MATCH ?"
         )
         params = [match]
-    if workspace:
-        sql += " AND workspace = ?"
-        params.append(workspace)
+    where, extra = _workspace_filter(workspace)
+    sql += where
+    params.extend(extra)
     sql += " ORDER BY score LIMIT ?"
     params.append(k)
     conn = sqlite3.connect(db_path)

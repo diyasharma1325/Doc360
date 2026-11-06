@@ -10,5 +10,11 @@ __pycache__/
 doc_sync/data/knowledge.db
 doc_sync/data/knowledge.db.building
 
-# Local Gemini response cache (doc_sync/gemini_call.py, DOC_SYNC_LLM_CACHE=1)
+# Local model response cache (gemini_call.py / claude_call.py, DOC_SYNC_LLM_CACHE=1)
 doc_sync/data/llm_cache/
+
+# Per-call log of claude -p usage (doc_sync/claude_call.py)
+doc_sync/data/model_calls.jsonl
+
+# Ticket runs (doc_sync/ticket.py) - copies of PDFs and live article content, kept local
+doc_sync/runs/

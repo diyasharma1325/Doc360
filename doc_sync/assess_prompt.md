@@ -21,5 +21,6 @@ yourself; screenshot staleness is out of scope for this pipeline.
 Follow the Document360 formatting rules and Whatfix writing guidelines
 below exactly; they are not optional.
 
-Report your answer using the `report_assessment` tool. Do not answer in
-plain prose.
+Report your answer only through the structured response format you are
+given (the `report_assessment` function, where one is offered). Do not
+answer in plain prose.
