@@ -20,6 +20,7 @@ that folder to start fresh.
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -28,6 +29,9 @@ from google.genai import types
 
 CACHE_DIR = Path(__file__).resolve().parent / "data" / "llm_cache"
 MAX_ATTEMPTS = 4
+# A 429 is retried only when Gemini asks for a short wait (a per-minute
+# limit). A longer one means a daily quota is spent, and waiting won't help.
+MAX_RATE_LIMIT_WAIT_S = 60
 
 
 def cache_enabled():
@@ -85,6 +89,12 @@ def generate(gclient, model, contents, config, label):
             wait = 5 * attempt
             print(f"    (Gemini call failed with {exc} — retrying in {wait}s, attempt {attempt}/{MAX_ATTEMPTS})")
             time.sleep(wait)
+        except genai_errors.ClientError as exc:
+            wait = _rate_limit_wait(exc)
+            if wait is None or attempt == MAX_ATTEMPTS:
+                raise
+            print(f"    (Gemini rate limit reached — waiting {wait:.0f}s as asked, attempt {attempt}/{MAX_ATTEMPTS})")
+            time.sleep(wait)
     _report(label, response.usage_metadata)
 
     # Only a response with a function call is worth replaying; anything
@@ -93,6 +103,16 @@ def generate(gclient, model, contents, config, label):
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(response.model_dump_json(exclude_none=True))
     return response
+
+
+def _rate_limit_wait(exc):
+    """Seconds to wait before retrying a 429, or None if it shouldn't be
+    retried: not a 429, or a wait longer than MAX_RATE_LIMIT_WAIT_S."""
+    if getattr(exc, "code", None) != 429:
+        return None
+    match = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", str(exc))
+    wait = float(match.group(1)) + 1 if match else 30.0
+    return wait if wait <= MAX_RATE_LIMIT_WAIT_S else None
 
 
 def _has_function_call(response):

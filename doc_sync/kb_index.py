@@ -104,6 +104,10 @@ _MAX_QUERY_TERMS = 48
 # counts than a match on the rest of the change note's wording. 2 was
 # picked by comparing shortlists for the saved change notes (2026-11-06).
 FOCUS_WEIGHT = 2.0
+# Content type names writers spell as one word but articles hyphenate. The
+# tokenizer splits "Pop-ups" into "pop ups", so "Popups" alone matched 115
+# articles against 647 for "pop ups" (2026-11-06).
+_FOCUS_ALIASES = {"popups": "pop ups", "popup": "pop up"}
 
 
 class IndexBuildIncomplete(RuntimeError):
@@ -259,9 +263,26 @@ def _focus_query(phrases):
     out = []
     for phrase in phrases or []:
         words = " ".join(_TOKEN_RE.findall((phrase or "").lower()))
-        if words and words not in out:
-            out.append(words)
+        for variant in (words, _FOCUS_ALIASES.get(words)):
+            if variant and variant not in out:
+                out.append(variant)
     return " OR ".join(f'"{p}"' for p in out)
+
+
+def phrase_count(phrase, workspace=None, db_path=DEFAULT_DB_PATH):
+    """How many indexed articles contain `phrase` as consecutive words."""
+    match = _focus_query([phrase])
+    if not match:
+        return 0
+    sql, params = "SELECT count(*) FROM articles WHERE articles MATCH ?", [match]
+    if workspace:
+        sql += " AND workspace = ?"
+        params.append(workspace)
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(sql, params).fetchone()[0]
+    finally:
+        conn.close()
 
 
 def search(query, k=40, workspace=None, db_path=DEFAULT_DB_PATH, focus=None):

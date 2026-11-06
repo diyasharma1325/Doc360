@@ -14,6 +14,7 @@ from flask import Flask, redirect, render_template, request, url_for
 import pipeline
 import review_queue
 import tag_map
+import workspaces
 from change_note import ChangeNote, save_change_note
 
 app = Flask(__name__)
@@ -28,6 +29,11 @@ def _discovery_mode(values):
     unrecognized means "titles", the pipeline's default."""
     mode = values.get("discovery", "titles")
     return mode if mode in DISCOVERY_MODES else "titles"
+
+
+def _lines(text):
+    """A one-per-line textarea -> its non-blank lines, trimmed."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def _index_status():
@@ -51,8 +57,10 @@ def new_change():
             summary=request.form["summary"].strip(),
             old=request.form["old"].strip(),
             new=request.form["new"].strip(),
-            effective_date=request.form["effective_date"].strip(),
             notes=request.form.get("notes", "").strip(),
+            product_line=request.form.get("product_line", "").strip(),
+            affected_content_types=_lines(request.form.get("affected_content_types", "")),
+            unaffected_content_types=_lines(request.form.get("unaffected_content_types", "")),
         )
         path = CHANGES_DIR / f"{note.feature_area}.json"
         save_change_note(note, path)
@@ -67,7 +75,10 @@ def new_change():
         return redirect(url_for("discover_candidates", path=str(path), discovery=discovery))
 
     feature_areas = sorted(tag_map.load().keys())
-    return render_template("new_change.html", feature_areas=feature_areas, index_status=_index_status())
+    return render_template(
+        "new_change.html", feature_areas=feature_areas, index_status=_index_status(),
+        product_lines=workspaces.names(),
+    )
 
 
 @app.route("/new/prd", methods=["POST"])
@@ -113,12 +124,8 @@ def review_extracted():
             effective_date=request.form.get("effective_date", "").strip(),
             notes=request.form.get("notes", "").strip(),
             product_line=request.form.get("product_line", "").strip(),
-            affected_content_types=[
-                line.strip() for line in request.form.get("affected_content_types", "").splitlines() if line.strip()
-            ],
-            unaffected_content_types=[
-                line.strip() for line in request.form.get("unaffected_content_types", "").splitlines() if line.strip()
-            ],
+            affected_content_types=_lines(request.form.get("affected_content_types", "")),
+            unaffected_content_types=_lines(request.form.get("unaffected_content_types", "")),
         )
         save_change_note(note, path)
         # A PRD-derived note has no tag_map entry to look candidates up

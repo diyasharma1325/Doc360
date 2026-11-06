@@ -35,8 +35,17 @@ articles to actually assess on the next screen.</p>
   <label>New <span class="hint">— what it becomes</span></label>
   <textarea name="new" required></textarea>
 
-  <label>Effective date</label>
-  <input name="effective_date" type="date" required>
+  <label>Product line <span class="hint">— the workspace this change ships in. Title search looks only here (DAP for Web if left blank); index search covers all six either way</span></label>
+  <select name="product_line">
+    <option value="">Not sure (DAP for Web)</option>
+    {% for pl in product_lines %}<option value="{{ pl }}">{{ pl }}</option>{% endfor %}
+  </select>
+
+  <label>Affected content types <span class="hint">(one per line, e.g. Flows, Smart Tips — the index search requires articles to mention one of these, so list them if you know them)</span></label>
+  <textarea name="affected_content_types" rows="3"></textarea>
+
+  <label>Unaffected content types <span class="hint">(optional, one per line — only what the change explicitly does not touch)</span></label>
+  <textarea name="unaffected_content_types" rows="2"></textarea>
 
   <label>Notes <span class="hint">(optional)</span></label>
   <textarea name="notes"></textarea>

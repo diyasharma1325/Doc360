@@ -117,9 +117,10 @@ def _build_change_note_text(change_note, html_content):
         "Change note:",
         f"- feature_area: {change_note.feature_area}",
         f"- summary: {change_note.summary}",
-        f"- effective_date: {change_note.effective_date}",
         f"- notes: {change_note.notes}",
     ]
+    if change_note.effective_date:
+        lines.insert(3, f"- effective_date: {change_note.effective_date}")
     if change_note.changes:
         lines.append("\nPer-content-type changes:")
         for c in change_note.changes:

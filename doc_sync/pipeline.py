@@ -119,10 +119,13 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
         # A bad response from either provider, or a write failure on one
         # article, shouldn't abort the rest of the batch — each candidate
         # gets its own outcome, success or failure.
+        # Any exception, not just AssessmentError: a Gemini rate limit
+        # (429) or a failed Document360 read used to abort the whole run,
+        # losing every result already gathered.
         try:
             assessment = assess_article(article_id, change_note, client=read_client)
-        except AssessmentError as exc:
-            print(f"  ERROR assessing {article_id}: {exc}")
+        except Exception as exc:
+            print(f"  ERROR assessing {article_id}: {type(exc).__name__}: {exc}")
             results.append({
                 "article_id": article_id, "outcome": "error",
                 "confidence": None, "rationale": str(exc), "queue_entry": None,
@@ -141,19 +144,18 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
         print(f"  Flagged (confidence={assessment.confidence}). {assessment.rationale}")
 
         draft_client = read_client
-        if real_reads and not live:
-            # Standing decision: no real writes in this environment,
-            # regardless of where discovery/assessment read from. Mirror
-            # the real article's current content into the local mock
-            # archive (idempotent — never overwrites an in-progress mock
-            # draft) so the write still goes through the proven mock-safe
-            # path, just seeded with real content instead of a
-            # hand-written fixture.
-            real_article = read_client.get_article(article_id)["data"]
-            mock_d360.seed_from_real(article_id, real_article)
-            draft_client = mock_d360.MockDocument360Client()
-
         try:
+            if real_reads and not live:
+                # Standing decision: no real writes in this environment,
+                # regardless of where discovery/assessment read from. Mirror
+                # the real article's current content into the local mock
+                # archive (idempotent — never overwrites an in-progress mock
+                # draft) so the write still goes through the proven mock-safe
+                # path, just seeded with real content instead of a
+                # hand-written fixture.
+                real_article = read_client.get_article(article_id)["data"]
+                mock_d360.seed_from_real(article_id, real_article)
+                draft_client = mock_d360.MockDocument360Client()
             entry = draft_writer.handle(article_id, change_note, assessment, client=draft_client, service=service)
         except Exception as exc:
             print(f"  ERROR writing draft for {article_id}: {exc}")

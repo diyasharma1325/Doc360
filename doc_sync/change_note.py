@@ -46,7 +46,7 @@ class ChangeNote:
     summary: str          # one line: what changed
     old: str              # the label, behavior, or UI text being replaced
     new: str              # what it becomes
-    effective_date: str   # ISO date the change goes/went live
+    effective_date: str = ""  # ISO date the change goes/went live — optional, informational only
     notes: str = ""       # anything else worth telling the agent
     product_line: str = ""  # real Document360 workspace name, e.g. "DAP for Web"
     affected_content_types: List[str] = field(default_factory=list)
@@ -55,12 +55,9 @@ class ChangeNote:
 
 
 REQUIRED_FIELDS = ["feature_area", "summary", "old", "new"]
-# effective_date is deliberately NOT required at load time: prd_intake.py
-# leaves it blank rather than guess when a PRD doesn't state one, and a
-# blank date doesn't actually affect discovery or assessment correctness
-# today — it's informational. A human still ought to review and fill it
-# in; webapp.py's PRD flow has a review step for exactly that, it's just
-# not enforced by this loader.
+# effective_date is optional and informational: nothing in discovery or
+# assessment depends on it, so the web forms no longer ask for it
+# (2026-11-06). prd_intake.py still records it when a PRD states one.
 
 
 def load_change_note(path):
@@ -74,7 +71,7 @@ def load_change_note(path):
         summary=data["summary"],
         old=data["old"],
         new=data["new"],
-        effective_date=data["effective_date"],
+        effective_date=data.get("effective_date", ""),
         notes=data.get("notes", ""),
         product_line=data.get("product_line", ""),
         affected_content_types=list(data.get("affected_content_types") or []),

@@ -279,9 +279,17 @@ in the pipeline six times larger. Index discovery addresses both:
    ranking and pop-up or Mirror articles that never mention the feature
    filled the shortlist (2026-11-06). If no article mentions the feature
    names at all, the search falls back to the whole note's wording.
+   "Popups"/"Popup" also match the hyphenated "Pop-ups" most articles
+   use.
 3. Each workspace is searched separately and capped at 12, so DAP for
    Web (about half of all articles) can't crowd the others out; the
    merged list is cut to the best 40.
+   Exception: when the feature's own name is rare (30 articles or
+   fewer, e.g. "display name" in 28), every article naming it goes on
+   the shortlist first, whatever its workspace, and the rest is filled
+   as above. The per-workspace cap otherwise cut 20 of the 26 DAP for
+   Web articles naming "display name" (2026-11-06). A common name
+   ("smart tips", 315) or one matching nothing leaves the search as is.
 4. That shortlist, each entry with its workspace and the matching
    excerpt, goes to the same triage call, told it's a keyword-matched
    shortlist rather than a full list. An id the model returns that

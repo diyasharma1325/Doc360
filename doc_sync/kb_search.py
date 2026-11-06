@@ -71,6 +71,13 @@ DEFAULT_DISCOVERY = "titles"
 INDEX_PER_WORKSPACE = 12
 INDEX_SHORTLIST_MAX = 40
 INDEX_STALE_AFTER_HOURS = 48
+# A feature name found in this many articles or fewer ("display name": 28)
+# is specific enough that every article mentioning it goes on the
+# shortlist, whatever workspace it's in. Above it ("smart tips": 315) the
+# name is too common to say anything on its own, and the per-workspace
+# search decides as usual. Kept below INDEX_SHORTLIST_MAX so other matches
+# always get some slots.
+INDEX_RARE_FEATURE_MAX = 30
 
 # Prepended to the triage request in "index" mode only. kb_search_prompt.md
 # describes a full title list, which a shortlist isn't — saying so here,
@@ -361,6 +368,18 @@ def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAUL
         print(f"    (no indexed article mentions {focus!r} — searching on the change note's full wording instead)")
         hits = run(None)
     hits.sort(key=lambda h: h["score"])  # bm25: lower is better, comparable across workspaces (one index)
+
+    # Every article that names a rare feature goes first. The 12-per-
+    # workspace cap exists so DAP for Web can't crowd the others out, but
+    # it also cut 20 of the 26 DAP for Web articles that mention "display
+    # name" while other workspaces filled their slots with weak matches
+    # (2026-11-06). Applying this only to RARE names leaves cross-product
+    # changes, whose name is common or matches nothing, as they were.
+    feature = re.sub(r"[-_]+", " ", change_note.feature_area or "").strip()
+    if feature and 0 < kb_index.phrase_count(feature, workspace, db_path) <= INDEX_RARE_FEATURE_MAX:
+        direct = kb_index.search(query, k=INDEX_RARE_FEATURE_MAX, workspace=workspace, db_path=db_path, focus=[feature])
+        direct_ids = {h["article_id"] for h in direct}
+        hits = direct + [h for h in hits if h["article_id"] not in direct_ids]
     shortlist = [{
         "id": h["article_id"],
         "title": h["title"],
