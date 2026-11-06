@@ -35,6 +35,7 @@ MVP.
 | `ticket.py` | 1 | The simulated Jira ticket a run starts from (summary, free-text description, PDF attachments, assignee) in its own `runs/<name>/` folder, and the local recorder for its status moves and comments (`out/jira_log.json`, `out/comment-NN.txt`). Nothing touches a real Jira |
 | `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`ticket_intake_prompt.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
 | `ticket_run.py` | 1-4 | The ticket's steps: `intake`, `phase1` (discovery -> numbered candidate plan comment, In Draft -> Peer review), `replan` (writer feedback -> revised plan), `approve` (plan numbers -> `approved.json`, Peer review -> For review), `phase2` (assess approved articles, save or write drafts, final comment), `show` |
+| `build_artifact.py`, `artifact_template.html` | 5 | The Jira-style artifact page for a run, as the I2P backtest builds one: ticket header, details sidebar, activity timeline (status moves, comments reproduced exactly, the extracted change note, the approval), proposed edits as word-level before/after diffs, and a footnote on how the run differs from production. Writes `runs/<name>/artifact.html`; publish it with the Artifact tool |
 | `archived_writer.py` | 4 | The only way a ticket run writes to Document360: into the writer's listed Archived scratch articles, never a live one. Refuses unlisted ids and anything not in the Archived workspace, names every target before an overwrite, direct update (never a fork or publish) |
 | `pdf_text.py` | 1 | Ticket PDF attachments -> text (pdfplumber, tables as Markdown), with the I2P agent's 10 MB / 300-page limits |
 | `change_note.py` | 1 | Defines and validates the change-note shape, including the `product_lines` list |
@@ -178,8 +179,24 @@ write path and its guard are tested against a fake client only. Live
 Archived writes start once the whole pipeline is finished and tested end
 to end with the Jira-style artifact.
 
-Still to come: the Jira-style artifact and a `doc-sync` skill that drives
-the whole run.
+**The Jira-style artifact.** At any stage, a run can be shown as a Jira
+issue page, as the I2P backtest shows its runs:
+
+```
+python3 doc_sync/build_artifact.py dap-display-names --title "Display Names Doc Sync"
+```
+
+writes `runs/<name>/artifact.html`, which is then published (privately)
+with Claude's Artifact tool. It shows the ticket, every recorded status
+move and comment in order (reproduced exactly; the Markdown comments are
+rendered by a small built-in renderer, no extra package), the extracted
+change note with the words the product lines came from, the approval,
+and every proposed edit as a word-level diff of the article's visible
+text. Whatever hasn't happened yet is simply left out, so the page can be
+rebuilt and republished to the same link as the run goes on.
+
+Still to come: a `doc-sync` skill that drives the whole run, and removing
+the web app.
 
 ## Before your first run
 

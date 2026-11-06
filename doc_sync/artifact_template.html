@@ -1,0 +1,179 @@
+<title>{{PAGE_TITLE}}</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a Jira issue page, as in the I2P backtest artifact. Ticket fields up
+   top, a dated activity rail where status moves are thin rows and comments are
+   the only boxed objects, a details sidebar, then the proposed edits as diffs. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1c2430;
+  --muted: #5d6878;
+  --line: #dde2e9;
+  --soft: #eef1f5;
+  --accent: #0f6e7a;
+  --accent-soft: #e2f1f2;
+  --agent: #6a4fb3;
+  --agent-soft: #efeaf9;
+  --human: #b25e12;
+  --human-soft: #fbefe2;
+  --link: #0b5fa8;
+  --del: #a3302a;
+  --del-soft: #fbe5e3;
+  --ins: #1d6b3c;
+  --ins-soft: #e0f3e7;
+  --warn: #8a5a00;
+  --warn-soft: #fbf0d9;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161c; --surface: #1a2028; --fg: #dbe2ea; --muted: #94a0b0;
+    --line: #2c3540; --soft: #222a33; --accent: #5cc3cd; --accent-soft: #163338;
+    --agent: #b4a0ee; --agent-soft: #2a2440; --human: #f0a660; --human-soft: #3a2a1a;
+    --link: #79b8f2; --del: #f19a92; --del-soft: #3d1f1d; --ins: #86d6a3; --ins-soft: #173324;
+    --warn: #f0c46a; --warn-soft: #3a2e14; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161c; --surface: #1a2028; --fg: #dbe2ea; --muted: #94a0b0;
+  --line: #2c3540; --soft: #222a33; --accent: #5cc3cd; --accent-soft: #163338;
+  --agent: #b4a0ee; --agent-soft: #2a2440; --human: #f0a660; --human-soft: #3a2a1a;
+  --link: #79b8f2; --del: #f19a92; --del-soft: #3d1f1d; --ins: #86d6a3; --ins-soft: #173324;
+  --warn: #f0c46a; --warn-soft: #3a2e14; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.55; }
+.page {
+  max-width: 1120px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+a { color: var(--link); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--soft); border-radius: 3px; padding: 0 4px; overflow-wrap: anywhere; }
+.crumbs { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.crumbs .key { color: var(--fg); font-weight: 500; }
+.sim { font-size: 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; }
+h1 { font-size: clamp(1.35rem, 1.1rem + 1vw, 1.75rem); line-height: 1.25; margin: 10px 0 22px; text-wrap: balance; font-weight: 600; }
+h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 6px; text-wrap: balance; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 32px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } .side { order: -1; } }
+main { min-width: 0; display: grid; gap: 28px; }
+.label { font-size: 11.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.desc { max-width: 68ch; margin: 0; white-space: pre-wrap; }
+.files { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.file { display: flex; gap: 10px; align-items: flex-start; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; min-width: 0; }
+.file .ext { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 2px 5px; flex: none; margin-top: 2px; }
+.file .name { font-size: 13.5px; overflow-wrap: anywhere; }
+.file .meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.side dl { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; display: grid; gap: 12px; }
+.side dt { font-size: 12px; color: var(--muted); }
+.side dd { margin: 2px 0 0; font-size: 14px; overflow-wrap: anywhere; }
+.status { display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 4px; background: var(--soft); border: 1px solid var(--line); white-space: nowrap; }
+.status.watched { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.flowstrip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.flowstrip .here { color: var(--accent); font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; border-radius: 999px; padding: 1px 9px; background: var(--soft); border: 1px solid var(--line); white-space: nowrap; }
+
+/* Activity rail */
+.rail { list-style: none; margin: 0; padding: 0; position: relative; }
+.rail::before { content: ""; position: absolute; left: 15px; top: 6px; bottom: 6px; width: 2px; background: var(--line); }
+.ev { position: relative; padding-left: 44px; min-width: 0; }
+.ev + .ev { margin-top: 18px; }
+.avatar { position: absolute; left: 0; top: 0; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; border: 2px solid var(--bg); }
+.avatar.agent { background: var(--agent-soft); color: var(--agent); }
+.avatar.human { background: var(--human-soft); color: var(--human); }
+.who { font-size: 14px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; padding-top: 5px; }
+.who b { font-weight: 600; }
+.who time { font-family: var(--font-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tag { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; }
+.tag.agent { background: var(--agent-soft); color: var(--agent); }
+.tag.human { background: var(--human-soft); color: var(--human); }
+.move { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 2px; }
+.step-note { font-size: 13px; color: var(--muted); margin: 4px 0 0; max-width: 68ch; }
+.comment { margin-top: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 18px; min-width: 0; }
+.comment.agent { border-left: 3px solid var(--agent); }
+.comment.human { border-left: 3px solid var(--human); }
+.comment p { margin: .45em 0; }
+.comment ul { margin: .3em 0 .5em; padding-left: 1.3em; }
+.comment li { margin: .15em 0; }
+.tablewrap { overflow-x: auto; margin: 8px 0; }
+.comment table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+.comment th, .comment td { border: 1px solid var(--line); padding: 6px 9px; vertical-align: top; text-align: left; }
+.comment th { background: var(--soft); font-weight: 600; white-space: nowrap; }
+.comment td:first-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.note-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 4px 0 0; font-size: 13.5px; }
+.note-card dt { color: var(--muted); }
+.note-card dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Proposed edits */
+.edit { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; min-width: 0; }
+.edit + .edit { margin-top: 14px; }
+.edit .head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; }
+.outcome { font-size: 12px; font-weight: 600; border-radius: 4px; padding: 2px 8px; white-space: nowrap; }
+.outcome.merge { background: var(--warn-soft); color: var(--warn); }
+.outcome.written, .outcome.saved { background: var(--ins-soft); color: var(--ins); }
+.edit .why { font-size: 13.5px; color: var(--muted); margin: 6px 0 0; max-width: 80ch; }
+.edit details { margin-top: 10px; }
+.edit summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.diff { margin-top: 8px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; font-size: 13.5px; }
+.diff .ln { padding: 4px 10px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.diff .ln:first-child { border-top: 0; }
+.diff .ctx { color: var(--muted); }
+.diff .gap { color: var(--muted); text-align: center; font-family: var(--font-mono); font-size: 12px; background: var(--soft); }
+.diff .sign { font-family: var(--font-mono); font-size: 12px; color: var(--muted); margin-right: 6px; }
+del { background: var(--del-soft); color: var(--del); text-decoration: line-through; border-radius: 2px; }
+ins { background: var(--ins-soft); color: var(--ins); text-decoration: none; border-radius: 2px; }
+.diff .ln.del-line { background: var(--del-soft); }
+.diff .ln.ins-line { background: var(--ins-soft); }
+.footnote { margin-top: 36px; border-top: 1px solid var(--line); padding-top: 16px; font-size: 13px; color: var(--muted); max-width: 80ch; }
+.footnote p { margin: .4em 0; }
+</style>
+
+<div class="page">
+  <div class="crumbs">
+    <span>WSC</span><span>/</span><span class="key">{{KEY}}</span>
+    <span class="sim">Simulated ticket · {{DATE}}</span>
+  </div>
+  <h1>{{SUMMARY}}</h1>
+
+  <div class="grid">
+    <main>
+      <section>
+        <p class="label">Description</p>
+        <p class="desc">{{DESCRIPTION}}</p>
+      </section>
+
+      <section>
+        <p class="label">Attachments ({{ATTACH_COUNT}})</p>
+        {{ATTACHMENTS}}
+      </section>
+
+      <section>
+        <p class="label">Activity</p>
+        <ol class="rail">
+{{ACTIVITY}}
+        </ol>
+      </section>
+
+{{EDITS}}
+    </main>
+
+    <aside class="side">
+      <p class="label">Details</p>
+      <dl>
+{{DETAILS}}
+      </dl>
+    </aside>
+  </div>
+
+  <div class="footnote">
+{{FOOTNOTE}}
+  </div>
+</div>
