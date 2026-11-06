@@ -83,6 +83,9 @@ INDEX_RARE_FEATURE_MAX = 30
 # searched only up to this size (see _load_prompt). Web + Desktop: 65 KB;
 # all four DAP surfaces: 102 KB; all six: 177 KB.
 INDEX_PRODUCT_CONTEXT_MAX_BYTES = 90_000
+# On a re-plan, up to this many more articles matching the writer's
+# feedback join the shortlist (see find_candidates_indexed).
+INDEX_FEEDBACK_EXTRA = 12
 
 # Prepended to the triage request in "index" mode only. kb_search_prompt.md
 # describes a full title list, which a shortlist isn't — saying so here,
@@ -238,8 +241,29 @@ def _listing_line(a):
     return line
 
 
+def _revision_block(revision):
+    """The writer's feedback on the previous candidate plan, with that plan,
+    for a re-plan's triage call. `revision` is {"feedback": str,
+    "previous": [candidate records with "n"]}, or None."""
+    if not revision:
+        return ""
+    lines = [
+        "",
+        "",
+        "The writer reviewed an earlier candidate list for this change and asked for "
+        "changes. Apply their feedback; it overrides your own judgment where they conflict.",
+        "Writer's feedback: " + revision["feedback"].strip(),
+        "Earlier candidate list (numbered as the writer saw it):",
+    ]
+    for c in revision.get("previous") or []:
+        lines.append(f"  {c['n']}. [{c['article_id']}] {c['title']} ({c.get('workspace') or '?'})")
+    if not revision.get("previous"):
+        lines.append("  (empty: no candidates were found)")
+    return "\n".join(lines)
+
+
 def triage(change_note, articles, shortlist=False, product_lines=None, include_products=True,
-           provider=claude_call.DEFAULT_PROVIDER, label="triage"):
+           provider=claude_call.DEFAULT_PROVIDER, label="triage", revision=None):
     """One model call: given the full article list (titles only — no
     content fetched yet), ask which are plausibly affected. Returns the
     list of {article_id, title, reason} dicts the model reported.
@@ -248,7 +272,8 @@ def triage(change_note, articles, shortlist=False, product_lines=None, include_p
     product reference files (default DAP for Web's); `include_products=False`
     leaves them out. `provider` is "claude" (default, claude -p) or
     "gemini" (fallback); both get the same system prompt, request and
-    schema. `label` names the call in the token report."""
+    schema. `label` names the call in the token report. `revision` adds
+    the writer's feedback on an earlier plan (see _revision_block)."""
     listing = "\n".join(_listing_line(a) for a in articles)
     note_lines = [
         "Change note:",
@@ -277,7 +302,8 @@ def triage(change_note, articles, shortlist=False, product_lines=None, include_p
             "Explicitly UNAFFECTED (do not select an article just for covering one "
             "of these): " + ", ".join(change_note.unaffected_content_types)
         )
-    prompt = "\n".join(note_lines) + f"\n\nKnowledge base articles ({len(articles)} total):\n{listing}"
+    prompt = ("\n".join(note_lines) + _revision_block(revision)
+              + f"\n\nKnowledge base articles ({len(articles)} total):\n{listing}")
     if shortlist:
         prompt = _SHORTLIST_NOTE + prompt
     system = _load_prompt(product_lines, include_products=include_products)
@@ -405,7 +431,7 @@ def resolve_scope(change_note, product_lines=None, discovery=DEFAULT_DISCOVERY):
 
 
 def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB_PATH,
-                            provider=claude_call.DEFAULT_PROVIDER):
+                            provider=claude_call.DEFAULT_PROVIDER, revision=None):
     """"index" mode: full-text search across the workspaces in `scope` (a
     list of live workspace names; None means all six), balanced per
     workspace, then one triage call over the shortlist. Same return shape as
@@ -454,17 +480,37 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
         "version_id": h["version_id"],
         "snippet": h["snippet"],
     } for h in hits[:INDEX_SHORTLIST_MAX]]
+
+    # A re-plan can ask for articles the first search never shortlisted
+    # ("also include Task List articles"); triage can only pick from what
+    # it's shown. So the feedback's own wording is searched too, in the same
+    # scope, and up to INDEX_FEEDBACK_EXTRA new hits are added. Local, no
+    # model call. Exclusion wording in the feedback ("drop the release
+    # notes") may add an article back here, which is harmless: the model is
+    # told to apply the feedback, and only what it selects is kept.
+    if revision and revision.get("feedback"):
+        have = {a["id"] for a in shortlist}
+        extra = [h for h in kb_index.search(revision["feedback"], k=INDEX_FEEDBACK_EXTRA * 2, workspace=names,
+                                            db_path=db_path)
+                 if h["article_id"] not in have][:INDEX_FEEDBACK_EXTRA]
+        shortlist += [{
+            "id": h["article_id"], "title": h["title"], "category_path": h["category_path"],
+            "workspace": h["workspace"], "version_id": h["version_id"], "snippet": h["snippet"],
+        } for h in extra]
+        if extra:
+            print(f"    (re-plan: added {len(extra)} article(s) matching the writer's feedback to the shortlist)")
     if not shortlist:
         return [], [], []
 
     product_lines = _index_product_lines(names)
     found = triage(change_note, shortlist, shortlist=True, product_lines=product_lines,
-                   include_products=product_lines is not None, provider=provider)
+                   include_products=product_lines is not None, provider=provider, revision=revision)
     kept = _with_workspace(_only_shown(found, shortlist), shortlist)
     return [c["article_id"] for c in kept], kept, shortlist
 
 
-def find_candidates_titles(change_note, scope, client=None, provider=claude_call.DEFAULT_PROVIDER):
+def find_candidates_titles(change_note, scope, client=None, provider=claude_call.DEFAULT_PROVIDER,
+                           revision=None):
     """"titles" mode: for EACH workspace in `scope`, walk its full title
     list and triage it in its own call, with that workspace's product
     reference files. One call per workspace, not one merged listing: DAP
@@ -481,7 +527,7 @@ def find_candidates_titles(change_note, scope, client=None, provider=claude_call
         print(f"    ({name}: {len(articles)} article title(s) to triage)", flush=True)
         label = "triage" if len(scope) == 1 else f"triage {name}"
         picked = _only_shown(triage(change_note, articles, product_lines=[name], provider=provider,
-                                    label=label), articles)
+                                    label=label, revision=revision), articles)
         found.extend(_with_workspace(picked, articles))
         all_articles.extend(articles)
     return [c["article_id"] for c in found], found, all_articles
@@ -507,7 +553,7 @@ def _with_workspace(found, shown_articles):
 
 
 def find_candidates_live(change_note, client=None, product_lines=None, discovery=DEFAULT_DISCOVERY,
-                         provider=claude_call.DEFAULT_PROVIDER):
+                         provider=claude_call.DEFAULT_PROVIDER, revision=None):
     """Discovery entry point used by pipeline.py's automatic KB fallback.
     Returns (article_ids, full_candidate_records, all_articles_scanned);
     each candidate record carries its `workspace`.
@@ -520,17 +566,18 @@ def find_candidates_live(change_note, client=None, product_lines=None, discovery
     own call. discovery="index": the local knowledge index searched within
     scope, then one triage call over the shortlist; falls back to "titles"
     when no index has been built. `provider` picks the triage model:
-    "claude" (default) or "gemini"."""
+    "claude" (default) or "gemini". `revision` carries a writer's feedback
+    on an earlier plan into the triage call (re-plan)."""
     if discovery not in DISCOVERY_MODES:
         raise ValueError(f"discovery must be one of {DISCOVERY_MODES}, got {discovery!r}")
     if discovery == "index":
         if index_available():
             return find_candidates_indexed(change_note, scope=resolve_scope(change_note, product_lines, "index"),
-                                           provider=provider)
+                                           provider=provider, revision=revision)
         print("    (no knowledge index built yet — falling back to title-only discovery; "
               "build one with: python3 doc_sync/kb_index.py build)")
     scope = resolve_scope(change_note, product_lines, "titles")
-    return find_candidates_titles(change_note, scope, client=client, provider=provider)
+    return find_candidates_titles(change_note, scope, client=client, provider=provider, revision=revision)
 
 
 def parse_product_lines(text):

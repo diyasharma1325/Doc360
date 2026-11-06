@@ -34,6 +34,7 @@ MVP.
 |---|---|---|
 | `ticket.py` | 1 | The simulated Jira ticket a run starts from (summary, free-text description, PDF attachments, assignee) in its own `runs/<name>/` folder, and the local recorder for its status moves and comments (`out/jira_log.json`, `out/comment-NN.txt`). Nothing touches a real Jira |
 | `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`ticket_intake_prompt.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
+| `ticket_run.py` | 1-2 | The ticket's steps: `intake`, `phase1` (discovery -> numbered candidate plan comment, In Draft -> Peer review), `replan` (writer feedback -> revised plan), `approve` (plan numbers -> `approved.json`, Peer review -> For review), `show` |
 | `pdf_text.py` | 1 | Ticket PDF attachments -> text (pdfplumber, tables as Markdown), with the I2P agent's 10 MB / 300-page limits |
 | `change_note.py` | 1 | Defines and validates the change-note shape, including the `product_lines` list |
 | `tag_map.py` | 2 (state) | Optional feature-area -> article-id cache, hand-seeded; never required |
@@ -93,8 +94,12 @@ the ticket's summary, a free-text description and any PDF attachments
 python3 doc_sync/ticket.py new dap-display-names --assignee "Your Name" \
     --summary "Display Name for Whatfix content" \
     --description-file desc.txt --attach "Product Note.pdf"
-python3 doc_sync/ticket_intake.py dap-display-names        # To Do -> In Draft
-python3 doc_sync/ticket.py show dap-display-names          # ticket + everything recorded on it
+python3 doc_sync/ticket_run.py intake  dap-display-names              # To Do -> In Draft
+python3 doc_sync/ticket_run.py phase1  dap-display-names [--discovery index]   # In Draft -> Peer review + plan
+python3 doc_sync/ticket_run.py replan  dap-display-names "Drop 2; also check Task List articles"
+python3 doc_sync/ticket_run.py approve dap-display-names "1, 3-5"       # Peer review -> For review
+python3 doc_sync/ticket_run.py show    dap-display-names               # status, plan, approval
+python3 doc_sync/ticket.py show dap-display-names                      # ticket + every recorded event
 ```
 
 Each run gets its own folder, `doc_sync/runs/<name>/` (git-ignored): the
@@ -115,12 +120,31 @@ PDF, or a scanned image with no text) doesn't stop the run; a comment
 says it wasn't used. A failed model call also moves the ticket back to To
 Do with a comment, so it can always be retried.
 
-Still to come: the candidate plan, approval and article writes recorded
-on the ticket, the Jira-style artifact, and a `doc-sync` skill that drives
-the whole run. Until then, run discovery and assessment on the run's
-change note with `pipeline.py run --change-note doc_sync/runs/<name>/change_note.json`
-(discovery searches every product line the ticket named; see "Discovery
-scope" below).
+**Phase 1: the candidate plan** (`ticket_run.py`). Discovery runs on the
+change note within the ticket's product lines (see "Discovery scope"
+below) and the result is recorded as a numbered **candidate plan**
+comment, moving the ticket In Draft -> Peer review. The plan is saved as
+`plan.json`. `tag_map.json` is not used on ticket runs: its ids are mock
+fixtures, not live articles. A failed phase 1 records a "plan failed"
+comment and leaves the ticket in In Draft to run again.
+
+**Revising the plan.** `replan` records the writer's feedback as their
+comment and re-runs triage with that feedback plus the numbered plan they
+saw, so "drop 2 and 6" or "also include Task List articles" work. In index
+mode the feedback's own wording is also searched locally and up to 12
+matches join the shortlist, since triage can only pick from what it's
+shown. `--product-lines` changes the scope. The ticket stays in Peer
+review; each revision is a new comment and a new `plan.json` version.
+
+**Approval is by plan number, never by typed article id** (`1, 3, 5-7` or
+`all`): each number is checked against the plan, the chosen articles are
+saved as `approved.json`, and the ticket moves Peer review -> For review.
+After that, re-planning and re-approving are refused. A typed id once sent
+a test run after an article that doesn't exist (2026-11-06); numbers can't.
+
+Still to come: phase 2 (assessing the approved articles and writing drafts
+into Archived scratch articles, recorded on the ticket), the Jira-style
+artifact, and a `doc-sync` skill that drives the whole run.
 
 ## Before your first run
 
