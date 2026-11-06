@@ -32,7 +32,10 @@ MVP.
 
 | File | Stage | Role |
 |---|---|---|
-| `change_note.py` | 1 | Defines and validates the change-note shape |
+| `ticket.py` | 1 | The simulated Jira ticket a run starts from (summary, free-text description, PDF attachments, assignee) in its own `runs/<name>/` folder, and the local recorder for its status moves and comments (`out/jira_log.json`, `out/comment-NN.txt`). Nothing touches a real Jira |
+| `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`ticket_intake_prompt.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
+| `pdf_text.py` | 1 | Ticket PDF attachments -> text (pdfplumber, tables as Markdown), with the I2P agent's 10 MB / 300-page limits |
+| `change_note.py` | 1 | Defines and validates the change-note shape, including the `product_lines` list |
 | `tag_map.py` | 2 (state) | Optional feature-area -> article-id cache, hand-seeded; never required |
 | `candidates.py` | 2 | Looks up candidates from the tag map (fuzzy-match fallback on `feature_area` typos); returns `[]`, not an error, when there's no confident match, so `pipeline.py` can fall back to a live search |
 | `kb_search.py` | 2 | Live search, two modes. **titles** (default): walks one real Document360 workspace and semantically triages every title against the change note (one model call). **index** (opt-in): searches article bodies across all six live workspaces with `kb_index.py`, then triages only that shortlist. `pipeline.py` runs this automatically whenever `candidates.py` finds no tag_map entry — see "Live KB search" and "Index discovery" below |
@@ -44,7 +47,7 @@ MVP.
 | `product_context.py` | 2-3 | Picks which product reference files a prompt carries, by product line — the article's own workspace first, then the change note's `product_line`, then DAP for Web |
 | `dap-core.md`, `dap-web.md`, `dap-desktop.md`, `dap-os.md`, `dap-mobile.md`, `product-analytics.md`, `mirror.md` | 2-3 (reference) | Product reference files: concepts, terminology, and a fixed snapshot of each workspace's category structure. The four `dap-*` surface files are deltas on `dap-core.md` and always load with it |
 | `draft_writer.py` | 4 | Only file that writes to Document360. Checks for an existing draft FIRST, then forks the article into a new draft version and writes into that; never publishes |
-| `verify.py` | 4 | Cheap post-write checks (old text gone, new text present, HTML intact, no images lost), shown to the reviewer before they decide |
+| `verify.py` | 4 | Cheap post-write checks, shown to the reviewer before they decide: old wording that was in the article word for word is gone, HTML intact, no big shrink, no images lost. (No "new text present" check since 2026-11-06: a change note's `new` is a summary sentence, so it fired on nearly every draft) |
 | `review_queue.py` | 5 | JSON-backed pending/approved/rejected/merge_conflict queue |
 | `claude_call.py` | 2-3 | Every Claude call goes through here: `claude -p` with `--json-schema` structured output, run from a temp folder outside the repo (so no `CLAUDE.md` is loaded) with `ANTHROPIC_API_KEY` stripped; retries, a per-call report, a call log (`data/model_calls.jsonl`) and the shared local response cache. `python3 doc_sync/claude_call.py selftest` checks it works |
 | `gemini_call.py` | 2-3 | Every Gemini call goes through here: retries, a per-call token report, and the opt-in local response cache (`DOC_SYNC_LLM_CACHE=1`) |
@@ -56,14 +59,20 @@ MVP.
 ## Setup
 
 ```
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 ```
+
+**Run every command with `.venv/bin/python`**, not the system `python3`:
+the macOS system Python has none of these packages, so it fails on the
+first import. The commands below write `python3` for brevity.
 
 Requires everything already in `.env` (`D360_API_KEY`, `D360_PROJECT_ID`,
 `D360_FOLDER_ID`, `D360_USER_ID`), plus the `claude` CLI installed and
 logged in (`python3 doc_sync/claude_call.py selftest` should answer) for
 the default provider. `GEMINI_API_KEY` is needed only for
-`--provider gemini` and for PRD intake. `ANTHROPIC_API_KEY` is never
+`--provider gemini` (including `ticket_intake.py --provider gemini`) and
+for the web app's PRD intake. `ANTHROPIC_API_KEY` is never
 needed, and is stripped from `claude -p`'s environment if set, so calls
 always run on the Claude Code login. `beautifulsoup4` (in
 `requirements.txt`) is needed only to build the knowledge index.
@@ -72,6 +81,45 @@ All commands below assume you're running from the repo root (`Doc360/`),
 same as `core/cli.py` and `core/discover.py` — `doc_sync/assess.py` and
 `doc_sync/draft_writer.py` add `core/` to `sys.path` themselves, so
 this works regardless of where you invoke it from.
+
+## Ticket runs (the Jira-style entry point)
+
+A run starts from a **simulated Jira ticket**, as in the I2P backtest:
+there is no real Jira and nothing is ever posted to one. The writer gives
+the ticket's summary, a free-text description and any PDF attachments
+(PRDs, product notes):
+
+```
+python3 doc_sync/ticket.py new dap-display-names --assignee "Your Name" \
+    --summary "Display Name for Whatfix content" \
+    --description-file desc.txt --attach "Product Note.pdf"
+python3 doc_sync/ticket_intake.py dap-display-names        # To Do -> In Draft
+python3 doc_sync/ticket.py show dap-display-names          # ticket + everything recorded on it
+```
+
+Each run gets its own folder, `doc_sync/runs/<name>/` (git-ignored): the
+ticket, copies of its attachments, the extracted `change_note.json`, and
+`out/`, where every status move and comment the pipeline would make on a
+real ticket is recorded (`jira_log.json`, `comment-NN.txt`). The statuses
+are the I2P board's: To Do -> In Draft -> Peer review -> For review.
+
+**Product lines are a prerequisite.** Name them anywhere in the summary or
+description, in your own words ("ships on web and desktop"). Intake maps
+them onto the six live workspaces and records the exact words it took
+them from. It never picks one itself, and never takes one from an
+attachment alone. A ticket that names none is **bounced**: a comment says
+what to add, the ticket moves back to To Do, and no change note is saved.
+Fix it with `ticket.py update <name> --description-file ...` and run intake
+again. An attachment that can't be read (over 10 MB or 300 pages, not a
+PDF, or a scanned image with no text) doesn't stop the run; a comment
+says it wasn't used. A failed model call also moves the ticket back to To
+Do with a comment, so it can always be retried.
+
+Still to come: the candidate plan, approval and article writes recorded
+on the ticket, the Jira-style artifact, and a `doc-sync` skill that drives
+the whole run. Until then, run discovery and assessment on the run's
+change note with `pipeline.py run --change-note doc_sync/runs/<name>/change_note.json`
+(discovery still searches only the first product line).
 
 ## Before your first run
 
@@ -309,7 +357,8 @@ in the pipeline six times larger. Index discovery addresses both:
 4. That shortlist, each entry with its workspace and the matching
    excerpt, goes to the same triage call, told it's a keyword-matched
    shortlist rather than a full list. An id the model returns that
-   wasn't on the shortlist is dropped.
+   wasn't on the shortlist is dropped (title mode applies the same check
+   to its full listing since 2026-11-06).
 
 **This is not the removed keyword floor coming back.** The floor
 included keyword hits unconditionally; here every hit is still only a

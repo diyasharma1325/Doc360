@@ -13,6 +13,11 @@ out in the next, more careful assessment step.
 
 It is fine to select zero articles if genuinely none apply.
 
+Return only the articles you select. Never list an article you decided
+against, not even with a reason saying it doesn't apply: every article you
+return is treated as selected. Copy each article's id exactly as it
+appears in the list.
+
 Answer only through the structured response format you are given (the
 `report_candidates` function, where one is offered) — do not respond in
 plain text.

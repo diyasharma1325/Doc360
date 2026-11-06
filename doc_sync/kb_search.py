@@ -420,14 +420,20 @@ def find_candidates_indexed(change_note, workspace=None, db_path=kb_index.DEFAUL
     if not shortlist:
         return [], [], []
 
-    found = triage(change_note, shortlist, shortlist=True, provider=provider)
-    # The model may only pick from what it was shown: an id outside the
-    # shortlist is a hallucination or a typo, never a real candidate.
-    shown = {a["id"] for a in shortlist}
+    kept = _only_shown(triage(change_note, shortlist, shortlist=True, provider=provider), shortlist)
+    return [c["article_id"] for c in kept], kept, shortlist
+
+
+def _only_shown(found, shown_articles):
+    """The model may only pick from what it was shown: an id outside the
+    list is a hallucination or a typo, never a real candidate. Applied to
+    both discovery modes (title mode had no such check before 2026-11-06)."""
+    shown = {a["id"] for a in shown_articles}
     kept = [c for c in found if c.get("article_id") in shown]
     if len(kept) < len(found):
-        print(f"    (dropped {len(found) - len(kept)} candidate(s) whose id wasn't in the shortlist)")
-    return [c["article_id"] for c in kept], kept, shortlist
+        dropped = [c.get("article_id") for c in found if c.get("article_id") not in shown]
+        print(f"    (dropped {len(dropped)} candidate(s) whose id wasn't in the list shown: {dropped})")
+    return kept
 
 
 def find_candidates_live(change_note, client=None, project_version_id=None,
@@ -452,7 +458,7 @@ def find_candidates_live(change_note, client=None, project_version_id=None,
         print("    (no knowledge index built yet — falling back to title-only discovery; "
               "build one with: python3 doc_sync/kb_index.py build)")
     articles = fetch_kb_articles(client, project_version_id, product_line=product_line)
-    found = triage(change_note, articles, product_line=product_line, provider=provider)
+    found = _only_shown(triage(change_note, articles, product_line=product_line, provider=provider), articles)
     return [c["article_id"] for c in found], found, articles
 
 
@@ -495,7 +501,8 @@ def main():
         print(f"  {len(articles)} article(s) found in {t1 - t0:.1f}s.")
 
         print("Running semantic triage against the change note...")
-        found = triage(change_note, articles, product_line=product_line, provider=args.provider)
+        found = _only_shown(triage(change_note, articles, product_line=product_line, provider=args.provider),
+                            articles)
         t2 = time.time()
         print(f"  Triage took {t2 - t1:.1f}s. Total: {t2 - t0:.1f}s.\n")
 
