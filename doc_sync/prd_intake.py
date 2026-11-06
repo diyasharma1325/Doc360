@@ -16,7 +16,6 @@ one before running `pipeline.py run` against it.
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -24,8 +23,9 @@ sys.path.insert(0, str(THIS_DIR.parent / "core"))  # d360_client.py lives in ../
 
 from google import genai
 from google.genai import types
-from google.genai import errors as genai_errors
 
+import gemini_call
+import workspaces
 from change_note import ChangeNote, ContentChange, save_change_note
 from d360_client import Document360Client
 
@@ -69,9 +69,14 @@ CHANGE_NOTE_FUNCTION = types.FunctionDeclaration(
 
 
 def _real_product_lines(client=None):
+    """The live workspace names a PRD may be routed to: the account's real
+    /ProjectVersions list, narrowed to workspaces.LIVE_WORKSPACES so a
+    change note can never be pointed at Archived or another non-live
+    workspace that discovery would then refuse."""
     client = client or Document360Client()
     versions = client.list_project_versions().get("data", [])
-    return [v.get("version_code_name") for v in versions if v.get("version_code_name")]
+    return [v.get("version_code_name") for v in versions
+            if v.get("version_code_name") and workspaces.is_live(v.get("id"))]
 
 
 def _load_prompt(product_lines):
@@ -116,20 +121,7 @@ def extract_change_note(prd_input, client=None, is_pdf=False):
         if is_pdf else prd_input
     )
 
-    # Same retry behavior as assess_gemini.py/kb_search.py — this model
-    # intermittently returns a transient 503 even back to back with a
-    # successful call.
-    max_attempts = 4
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = gclient.models.generate_content(model=MODEL, contents=contents, config=config)
-            break
-        except genai_errors.ServerError as exc:
-            if attempt == max_attempts:
-                raise
-            wait = 5 * attempt
-            print(f"    (Gemini call failed with {exc} — retrying in {wait}s, attempt {attempt}/{max_attempts})")
-            time.sleep(wait)
+    response = gemini_call.generate(gclient, MODEL, contents, config, "PRD intake")
 
     candidates_out = response.candidates or []
     if not candidates_out or not getattr(candidates_out[0].content, "parts", None):

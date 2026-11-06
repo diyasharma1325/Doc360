@@ -40,7 +40,7 @@ from d360_client import Document360Client
 
 
 def run(change_note_path, live=False, provider="gemini", product_line=None,
-        only_ids=None, limit=None):
+        only_ids=None, limit=None, discovery="titles"):
     # Imported here, not at module level, so picking "claude" never
     # requires google-genai to be installed, and vice versa.
     if provider == "gemini":
@@ -82,10 +82,19 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
             # remember to pass this, which is the same mistake that caused
             # the wrong-workspace bug in the first place.
             kb_product_line = product_line or change_note.product_line or kb_search.DEFAULT_PRODUCT_LINE
-            article_ids, found, scanned = kb_search.find_candidates_live(change_note, product_line=kb_product_line)
+            # "index" discovery searches every live workspace unless
+            # --product-line narrows it: the change note's own product_line
+            # is NOT used as a filter there, since finding the articles a
+            # change breaks in OTHER workspaces is the point of that mode.
+            indexed = discovery == "index" and kb_search.index_available()
+            scope = (product_line or "all six live workspaces") if indexed else kb_product_line
+            article_ids, found, scanned = kb_search.find_candidates_live(
+                change_note, product_line=kb_product_line,
+                discovery=discovery, index_workspace=product_line,
+            )
             print(f"No tag_map entry for feature_area={change_note.feature_area!r} — ran a live KB "
-                  f"search under {kb_product_line!r} instead: scanned {len(scanned)} real article(s), "
-                  f"found {len(article_ids)} candidate(s):")
+                  f"search ({'index' if indexed else 'titles'}) under {scope!r} instead: scanned "
+                  f"{len(scanned)} real article(s), found {len(article_ids)} candidate(s):")
             for c in found:
                 print(f"    [{c['article_id']}] {c['title']} — {c['reason']}")
             real_reads = True
@@ -110,10 +119,13 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
         # A bad response from either provider, or a write failure on one
         # article, shouldn't abort the rest of the batch — each candidate
         # gets its own outcome, success or failure.
+        # Any exception, not just AssessmentError: a Gemini rate limit
+        # (429) or a failed Document360 read used to abort the whole run,
+        # losing every result already gathered.
         try:
             assessment = assess_article(article_id, change_note, client=read_client)
-        except AssessmentError as exc:
-            print(f"  ERROR assessing {article_id}: {exc}")
+        except Exception as exc:
+            print(f"  ERROR assessing {article_id}: {type(exc).__name__}: {exc}")
             results.append({
                 "article_id": article_id, "outcome": "error",
                 "confidence": None, "rationale": str(exc), "queue_entry": None,
@@ -132,19 +144,18 @@ def run(change_note_path, live=False, provider="gemini", product_line=None,
         print(f"  Flagged (confidence={assessment.confidence}). {assessment.rationale}")
 
         draft_client = read_client
-        if real_reads and not live:
-            # Standing decision: no real writes in this environment,
-            # regardless of where discovery/assessment read from. Mirror
-            # the real article's current content into the local mock
-            # archive (idempotent — never overwrites an in-progress mock
-            # draft) so the write still goes through the proven mock-safe
-            # path, just seeded with real content instead of a
-            # hand-written fixture.
-            real_article = read_client.get_article(article_id)["data"]
-            mock_d360.seed_from_real(article_id, real_article)
-            draft_client = mock_d360.MockDocument360Client()
-
         try:
+            if real_reads and not live:
+                # Standing decision: no real writes in this environment,
+                # regardless of where discovery/assessment read from. Mirror
+                # the real article's current content into the local mock
+                # archive (idempotent — never overwrites an in-progress mock
+                # draft) so the write still goes through the proven mock-safe
+                # path, just seeded with real content instead of a
+                # hand-written fixture.
+                real_article = read_client.get_article(article_id)["data"]
+                mock_d360.seed_from_real(article_id, real_article)
+                draft_client = mock_d360.MockDocument360Client()
             entry = draft_writer.handle(article_id, change_note, assessment, client=draft_client, service=service)
         except Exception as exc:
             print(f"  ERROR writing draft for {article_id}: {exc}")
@@ -200,7 +211,15 @@ def main():
                              "live KB search is needed (default: the change note's own product_line "
                              "field, else kb_search.py's DEFAULT_PRODUCT_LINE, currently 'DAP for "
                              "Web'). Each product line is a fully separate workspace with its own "
-                             "article set. Ignored when tag_map already has a match.")
+                             "article set. Ignored when tag_map already has a match. With "
+                             "--discovery index, narrows the search to this one workspace "
+                             "instead (default there: all six live workspaces).")
+    run_p.add_argument("--discovery", choices=["titles", "index"], default="titles",
+                        help="How the live KB search finds candidates when tag_map has no entry. "
+                             "'titles' (default): triage every title in one workspace. 'index': "
+                             "search article bodies across all six live workspaces with the local "
+                             "knowledge index (python3 doc_sync/kb_index.py build), then triage "
+                             "that shortlist; falls back to 'titles' if no index is built.")
     run_p.add_argument("--only", default=None,
                         help="Comma-separated article ids — assess only these from the discovered "
                              "candidates, skipping the rest. For quota-limited live demos.")
@@ -216,7 +235,8 @@ def main():
     if args.command == "run":
         only_ids = [a.strip() for a in args.only.split(",")] if args.only else None
         run(args.path, live=args.live, provider=args.provider,
-            product_line=args.product_line, only_ids=only_ids, limit=args.limit)
+            product_line=args.product_line, only_ids=only_ids, limit=args.limit,
+            discovery=args.discovery)
     elif args.command == "review":
         review(args.action, args.item_id)
 

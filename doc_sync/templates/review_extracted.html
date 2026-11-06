@@ -21,8 +21,9 @@
   <label>New</label>
   <textarea name="new" required>{{ note.new }}</textarea>
 
-  <label>Effective date {% if not note.effective_date %}<span class="hint" style="color:#a3490e;">— blank, PRD didn't state one</span>{% endif %}</label>
-  <input name="effective_date" type="date" value="{{ note.effective_date }}">
+  {# Not shown (nothing downstream needs it), but kept so the saved note,
+     and so every model request built from it, stays as extracted. #}
+  <input type="hidden" name="effective_date" value="{{ note.effective_date }}">
 
   <label>Product line (real Document360 workspace) {% if not note.product_line %}<span class="hint" style="color:#a3490e;">— blank, model wasn't confident</span>{% endif %}</label>
   <input name="product_line" value="{{ note.product_line }}" placeholder="e.g. DAP for Web">
@@ -35,6 +36,8 @@
 
   <label>Notes</label>
   <textarea name="notes">{{ note.notes }}</textarea>
+
+  {% include "_discovery_picker.html" %}
 
   <button type="submit">Confirm and search for candidates</button>
 </form>
