@@ -4,7 +4,7 @@ the existing articles a change has made wrong.
 
     python3 doc_sync/ticket_run.py intake  <run> [--provider gemini]        # To Do -> In Draft
     python3 doc_sync/ticket_run.py phase1  <run> [--discovery both]         # In Draft -> Peer review + plan
-    python3 doc_sync/ticket_run.py replan  <run> "<feedback>" [--product-lines ...]
+    python3 doc_sync/ticket_run.py replan  <run> "<feedback>" [--product-lines ...] [--old-terms "..."]
     python3 doc_sync/ticket_run.py approve <run> "1, 3, 5-7" | all          # Peer review -> For review
     python3 doc_sync/ticket_run.py phase2  <run> [--archived-targets "<link>, ..." --confirm-overwrite]
     python3 doc_sync/ticket_run.py show    <run>
@@ -27,7 +27,8 @@ the existing articles a change has made wrong.
 - RE-PLAN records the writer's feedback as their comment, re-runs triage
   with that feedback and the numbered plan they saw, and records the
   revised plan. The ticket stays in Peer review. `--product-lines` changes
-  the scope for this and later re-plans.
+  the scope for this and later re-plans; `--old-terms` replaces the old
+  wording intake stated or suggested, in the saved change note.
 - APPROVE takes plan NUMBERS, never typed article ids (a mistyped id once
   sent a test run after an article that doesn't exist), checks every one
   against the plan, saves approved.json and moves the ticket Peer review ->
@@ -51,7 +52,7 @@ sys.path.insert(0, str(THIS_DIR.parent / "core"))  # d360_client.py / workspaces
 import claude_call
 import kb_search
 import ticket
-from change_note import load_change_note
+from change_note import load_change_note, save_change_note
 
 
 class StepRefused(RuntimeError):
@@ -101,6 +102,11 @@ def plan_comment(tk, note, plan, revised=False):
         how = f"{plan['discovery']} search of {plan['scanned']:,} article(s) in {scope}"
     head = "Here's the revised candidate plan" if revised else "Here's the candidate plan"
     lines = [f"{head} for **{tk['key']}**.", "", f"**Change:** {note.summary}", ""]
+    if note.old_terms or note.old_terms_suggested:
+        terms = [f"**{t}**" for t in note.old_terms]
+        terms += [f"**{t}** (suggested)" for t in note.old_terms_suggested
+                  if t.lower() not in [o.lower() for o in note.old_terms]]
+        lines += [f"**Old wording searched for:** {', '.join(terms)}", ""]
     if not cands:
         lines += [
             f"I found **no articles** that look affected ({how}).",
@@ -133,6 +139,13 @@ def plan_comment(tk, note, plan, revised=False):
         ]
         for c in cands:
             lines.append(f"| {c['n']} | {_cell(c['title'])} | {_cell(c.get('workspace'))} | {_cell(c.get('reason'))} |")
+    for t in plan.get("swept") or []:
+        checked = (f"all **{t['shortlisted']}** articles" if t["shortlisted"] == t.get("total")
+                   else f"the **{t['shortlisted']}** closest to the change, of {t.get('total')}")
+        lines += ["", f"**{t['type']}:** I checked {checked} about {t['type']}."]
+        if t["left_out"]:
+            lines.append("Left out as not affected (reply to add any): "
+                         + "; ".join(_cell(x) for x in t["left_out"]) + ".")
     lines += [
         "",
         "**Next step:** approve the articles to assess by number, for example `1, 3, 5-7`, or "
@@ -150,6 +163,15 @@ def _discover(run, note, discovery, provider, scope_override, revision=None):
         note, product_lines=scope_override, discovery=discovery, provider=provider, revision=revision,
     )
     previous = load_plan(run)
+    picked = {c["article_id"] for c in found}
+    swept = {}
+    for a in scanned:
+        if a.get("about"):
+            t = swept.setdefault(a["about"], {"type": a["about"], "total": a.get("about_total"),
+                                              "shortlisted": 0, "left_out": []})
+            t["shortlisted"] += 1
+            if a["id"] not in picked:
+                t["left_out"].append(a["title"])
     plan = {
         "version": (previous or {}).get("version", 0) + 1,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -158,6 +180,7 @@ def _discover(run, note, discovery, provider, scope_override, revision=None):
         "scope": scope,
         "scope_override": scope_override,
         "scanned": len(scanned),
+        "swept": list(swept.values()),
         "candidates": [
             {"n": i, "article_id": c["article_id"], "title": c.get("title", ""),
              "workspace": c.get("workspace"), "reason": c.get("reason", ""),
@@ -204,16 +227,32 @@ def run_phase1(run, discovery=TICKET_DISCOVERY, provider=claude_call.DEFAULT_PRO
     return plan
 
 
-def run_replan(run, feedback, provider=None, product_lines=None):
-    """Re-plan from the writer's feedback; the ticket stays in Peer review."""
+def set_old_terms(rd, terms):
+    """The writer's own old terms replace intake's (stated and suggested
+    alike) in the saved change note, so every later search uses them."""
+    note = load_change_note(str(_path(rd, "change_note.json")))
+    note.old_terms = [t for t in terms if t]
+    note.old_terms_suggested = []
+    save_change_note(note, str(_path(rd, "change_note.json")))
+    ticket.record_event(rd, "old_terms", actor="writer", old_terms=note.old_terms)
+    return note
+
+
+def run_replan(run, feedback, provider=None, product_lines=None, old_terms=None):
+    """Re-plan from the writer's feedback; the ticket stays in Peer review.
+    `old_terms` (a list) replaces the change note's old wording first."""
     rd = ticket.run_dir(run)
     tk = ticket.load_ticket(rd)
     _require_status(tk, ticket.PEER_REVIEW, "a re-plan")
     plan = load_plan(rd)
     if not plan:
         raise StepRefused(f"{tk['key']} has no plan to revise.")
+    if old_terms and not (feedback or "").strip():
+        feedback = "Search for the old wording: " + ", ".join(old_terms) + "."
     if not (feedback or "").strip():
         raise StepRefused("Say what to change: a re-plan needs feedback.")
+    if old_terms:
+        set_old_terms(rd, old_terms)
     note = load_change_note(str(_path(rd, "change_note.json")))
 
     ticket.record_comment(rd, feedback.strip(), label="revision request", actor="writer")
@@ -515,9 +554,13 @@ def main():
 
     p = sub.add_parser("replan", help="Revise the plan from the writer's feedback")
     p.add_argument("run")
-    p.add_argument("feedback")
+    p.add_argument("feedback", nargs="?", default="",
+                   help="The writer's feedback, word for word (optional with --old-terms)")
     p.add_argument("--provider", choices=claude_call.PROVIDERS, default=None)
     p.add_argument("--product-lines", default=None, help="Change the scope (comma-separated)")
+    p.add_argument("--old-terms", default=None,
+                   help="The writer's old wording (comma-separated), replacing intake's stated and "
+                        "suggested old terms")
 
     p = sub.add_parser("approve", help="Peer review -> For review: approve plan numbers")
     p.add_argument("run")
@@ -543,6 +586,7 @@ def main():
             if outcome["status"] == "bounced":
                 raise SystemExit("Bounced to To Do: " + " ".join(outcome["reasons"]))
             print(f"Product lines: {', '.join(outcome['product_lines'])}")
+            ticket_intake._print_old_terms(outcome)
         elif args.command == "phase1":
             plan = run_phase1(args.run, args.discovery, args.provider,
                               kb_search.parse_product_lines(args.product_lines))
@@ -550,7 +594,8 @@ def main():
             show(args.run)
         elif args.command == "replan":
             plan = run_replan(args.run, args.feedback, args.provider,
-                              kb_search.parse_product_lines(args.product_lines))
+                              kb_search.parse_product_lines(args.product_lines),
+                              kb_search.parse_product_lines(args.old_terms))
             print(f"Plan v{plan['version']}: {len(plan['candidates'])} candidate(s).")
             show(args.run)
         elif args.command == "approve":

@@ -27,6 +27,14 @@ ticket_intake.py rather than being hand-typed):
   - `changes`: a list of {content_type, old, new} for when different
     content types need different wording — one shared old/new sentence
     doesn't scale past two or three types without getting vague.
+  - `old_terms` / `old_terms_suggested` (2026-11-09): the UI wording the
+    OUTDATED articles use for the old state ("Widgets tab"), which is what
+    discovery has to search for: a stale article doesn't contain the new
+    wording yet. `old_terms` is what the ticket or an attachment stated;
+    `old_terms_suggested` is intake's suggestion when it stated none, from
+    the product reference, shown to the writer to confirm. Discovery uses
+    both. A Launchers ticket that never said "Widgets" searched only for
+    "Content tab" and missed the articles still saying "Widgets".
 
 A change note with only the required fields still works everywhere;
 code that wants the richer structure checks whether these are populated
@@ -59,6 +67,16 @@ class ChangeNote:
     affected_content_types: List[str] = field(default_factory=list)
     unaffected_content_types: List[str] = field(default_factory=list)
     changes: List[ContentChange] = field(default_factory=list)
+    old_terms: List[str] = field(default_factory=list)
+    old_terms_suggested: List[str] = field(default_factory=list)
+
+    def all_old_terms(self):
+        """Stated old terms, then suggested ones, de-duplicated."""
+        out = []
+        for t in list(self.old_terms or []) + list(self.old_terms_suggested or []):
+            if t and t.strip() and t.strip().lower() not in [o.lower() for o in out]:
+                out.append(t.strip())
+        return out
 
 
 REQUIRED_FIELDS = ["feature_area", "summary", "old", "new"]
@@ -87,6 +105,8 @@ def load_change_note(path):
         affected_content_types=list(data.get("affected_content_types") or []),
         unaffected_content_types=list(data.get("unaffected_content_types") or []),
         changes=[ContentChange(**c) for c in data.get("changes") or []],
+        old_terms=list(data.get("old_terms") or []),
+        old_terms_suggested=list(data.get("old_terms_suggested") or []),
     )
 
 
@@ -112,6 +132,8 @@ def scaffold(path):
         "affected_content_types": [],
         "unaffected_content_types": [],
         "changes": [],
+        "old_terms": [],
+        "old_terms_suggested": [],
     }
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:

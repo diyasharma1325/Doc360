@@ -46,6 +46,13 @@ Extract:
 - **changes**: for each affected content type with a *specific*
   before/after, one `{content_type, old, new}` entry. Leave empty if the
   change is only described in general terms.
+- **old_terms**: the words the product used for the OLD state that this
+  change replaces: tab, page, section, menu, button or setting names
+  (e.g. "Widgets page", "Display Rules"). Outdated articles still use
+  these words, so they are what finds them. Take them ONLY from what the
+  ticket or an attachment says about the old state; return an empty
+  list if it doesn't say. Never guess here: a separate step suggests old
+  terms for the writer to confirm when the ticket gives none.
 - **notes**: caveats, exceptions, and anything ambiguous a human should
   double-check, including any conflict between the description and an
   attachment.

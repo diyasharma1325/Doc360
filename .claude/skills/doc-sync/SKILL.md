@@ -49,8 +49,12 @@ Ask the writer for:
    doesn't, say intake will bounce it and ask them to add them. The six live
    product lines are DAP for Web, DAP for Desktop, DAP on OS, DAP for Mobile,
    Product Analytics and Whatfix Mirror.
-3. **Attachments** (optional): PDF paths, e.g. a PRD or product note.
-4. **Assignee**: the writer's name, shown on the artifact.
+3. **Old wording** (recommended): what the product called the thing before the
+   change (the old tab, page, menu or button name, e.g. "Widgets page"). Outdated
+   articles still use those words, so they're what finds them. Ask for it to go in
+   the description. If the writer doesn't know, intake suggests some.
+4. **Attachments** (optional): PDF paths, e.g. a PRD or product note.
+5. **Assignee**: the writer's name, shown on the artifact.
 
 Pick a run name: a lowercase slug, `<product>-<feature>` (e.g. `dap-display-names`),
 not already in `doc_sync/runs/`. Write the description to a file in your scratchpad
@@ -74,6 +78,9 @@ $P doc_sync/ticket_run.py intake <name>
   writer disagrees, stop and fix the description; don't override silently.
 - An "attachments not read" comment means a PDF was skipped (too big, scanned, not a
   PDF). Tell the writer.
+- Show the "old wording" comment as recorded. When the terms are **suggested**, ask
+  the writer to confirm or correct them. A correction goes in on the plan step:
+  `$P doc_sync/ticket_run.py replan <name> --old-terms "<term 1>, <term 2>"`.
 
 ## Step 3: Phase 1, the candidate plan (In Draft -> Peer review)
 
@@ -90,11 +97,17 @@ Show the writer the plan: the latest `doc_sync/runs/<name>/out/comment-NN.txt`,
 as plain text, every row, numbered exactly as recorded. Then ask them to either
 **approve by number** or **say what to change**.
 
+The plan lists, under the table, every article about an affected content type that
+triage **left out**, by title. Show that too: it's where the writer spots a miss.
+
 To revise:
 
 ```bash
-$P doc_sync/ticket_run.py replan <name> "<the writer's feedback, word for word>" [--product-lines "..."]
+$P doc_sync/ticket_run.py replan <name> "<the writer's feedback, word for word>" [--product-lines "..."] [--old-terms "..."]
 ```
+
+`--old-terms` replaces the old wording intake stated or suggested; use it when the
+writer corrects it. Feedback can be left out when `--old-terms` is the only change.
 
 Show the revised plan the same way, and ask again. Repeat as needed.
 

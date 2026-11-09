@@ -50,6 +50,8 @@ built.
 | `candidates.py` | 2 | Looks up candidates from the tag map (fuzzy-match fallback on `feature_area` typos); returns `[]`, not an error, when there's no confident match, so `pipeline.py` can fall back to a live search |
 | `kb_search.py` | 2 | Live search, scoped to the change note's product lines (see "Discovery scope" below), two modes. **titles** (default): walks each workspace in scope and semantically triages every title against the change note (one model call per workspace). **index** (opt-in): searches article bodies in scope with `kb_index.py`, then triages only that shortlist. `pipeline.py` runs this automatically whenever `candidates.py` finds no tag_map entry — see "Live KB search" and "Index discovery" below |
 | `kb_index.py` | 2 (state) | Local full-text index of every published article body in the six live workspaces (`data/knowledge.db`, git-ignored). `build` (~30-40 min, read-only), `status`, `search`. Built all-or-nothing |
+| `old_terms_prompt.md` | 1 | Instructions for intake's second call, which suggests the old wording when the ticket gives none (see "Old wording") |
+| `eval_recall.py`, `eval/keys/` | — | Discovery recall benchmark: scores the shortlist (free) and the plan (`--triage`) against writer-confirmed answer keys (see "Recall benchmark") |
 | `kb_search_prompt.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
 | `assess.py` | 3 | **Claude path — default**, through `claude_call.py`; no API key needed |
 | `assess_gemini.py` | 3 | Gemini path — fallback (`--provider gemini`), needs `GEMINI_API_KEY` |
@@ -131,6 +133,18 @@ again. An attachment that can't be read (over 10 MB or 300 pages, not a
 PDF, or a scanned image with no text) doesn't stop the run; a comment
 says it wasn't used. A failed model call also moves the ticket back to To
 Do with a comment, so it can always be retried.
+
+**Old wording** (2026-11-09). Outdated articles describe the old state in
+the old words ("Widgets page"), so intake extracts them as `old_terms`
+when the ticket or an attachment says what the old state was called.
+When it doesn't, a second small call suggests some from the product
+reference for the ticket's product lines (`old_terms_suggested`, Claude
+only), and an "old wording" comment lists them for the writer to confirm.
+Discovery searches for both. The writer corrects them on a re-plan:
+`ticket_run.py replan <name> --old-terms "Widgets page, Widgets section"`
+replaces intake's terms in the saved change note. A suggestion is only as
+good as the product reference: the Unified Content Experience section in
+`dap-core.md` is what lets it name "Widgets page" for the Launchers change.
 
 **Phase 1: the candidate plan** (`ticket_run.py`). Discovery runs on the
 change note within the ticket's product lines (see "Discovery scope"
@@ -470,8 +484,8 @@ in the pipeline six times larger. Index discovery addresses both:
    six live workspaces, searched locally at no model cost (SQLite FTS5,
    BM25 ranking, titles weighted above bodies).
 2. The search text is the change note's feature area, summary, OLD
-   wording (per content type when it has `changes`) and affected content
-   types. Deliberately excluded: the `new` wording (a stale article
+   wording (per content type when it has `changes`), old terms (stated or
+   suggested, see "Old wording" above) and affected content types. Deliberately excluded: the `new` wording (a stale article
    doesn't contain it yet), `notes` and `unaffected_content_types` —
    exclusion language like "Pop-ups did NOT move" is what once mined
    wrong keywords into discovery.
@@ -486,17 +500,35 @@ in the pipeline six times larger. Index discovery addresses both:
    "Popups"/"Popup" also match the hyphenated "Pop-ups" most articles
    use.
 3. Only the workspaces in scope are searched (see "Discovery scope").
-   Each is searched separately and capped at 12, so DAP for
-   Web (about half of all articles) can't crowd the others out; the
-   merged list is cut to the best 40.
+   With several in scope, each is searched separately and capped at 12,
+   so DAP for Web (about half of all articles) can't crowd the others
+   out; the merged list is cut to the best 40. With one in scope there is
+   nothing to balance, so it gets all 40 (2026-11-09: the cap of 12 left
+   out most of the 103 DAP for Web articles mentioning Launchers).
    Exception: when the feature's own name is rare (30 articles or
    fewer, e.g. "display name" in 28), every article naming it goes on
    the shortlist first, whatever its workspace in scope, and the rest is filled
    as above. The per-workspace cap otherwise cut 20 of the 26 DAP for
    Web articles naming "display name" (2026-11-06). A common name
    ("smart tips", 315) or one matching nothing leaves the search as is.
-4. That shortlist, each entry with its workspace and the matching
-   excerpt, goes to the same triage call, told it's a keyword-matched
+4. **Content-type sweep** (2026-11-09). Every article whose TITLE or
+   CATEGORY names an affected content type (`CONTENT_TYPES` in
+   `kb_search.py`: Flows, Smart Tips, Beacons, Pop-ups, Launchers,
+   Blockers, Surveys, Task List, Self Help, Cues, Static Content) joins
+   the shortlist ahead of the ranked 40, whatever it ranks: on the
+   Launchers ticket, ranking alone shortlisted 7 of the 27 articles a
+   writer expected, because "Dashboard" and "Studio" articles outranked
+   "What are Launchers?". A UI surface the ticket names ("Dashboard",
+   "Content tab") is not swept: it's in hundreds of articles. The sweep
+   holds at most 120, shared equally between the types (Flows alone is
+   ~190 in DAP for Web), best match to the change first; the plan
+   comment says how many of each type were checked, and lists by title
+   every swept article triage left out, so the writer can add one back.
+   Swept entries are marked `about: <type>` and triage is told to keep
+   them unless they plainly can't be affected.
+5. That shortlist, each entry with its workspace and the matching
+   excerpt, goes to triage in batches of 40 (one call each), each batch
+   told it's a shortlist rather than a full list, told it's a keyword-matched
    shortlist rather than a full list. An id the model returns that
    wasn't on the shortlist is dropped (title mode applies the same check
    to its full listing since 2026-11-06).
@@ -516,6 +548,24 @@ Two trade-offs, both open to revisit after comparison runs:
 - **The index holds each article's LATEST version** — for an article
   with a pending draft, the draft's text. Harmless for discovery, since
   such an article is flagged for a manual merge anyway.
+
+**What the index reads** (2026-11-09): each article's visible text, plus
+the alt text of each image, where the image sits (a bare file name or a
+generic "image" is skipped). Screenshots carry much of an article's
+context ("Customize a Launcher": 11 images, 335 words, and "Dashboard"
+only in its screenshots); alt text is the free part of that. Text INSIDE
+screenshots (OCR) and semantic search are planned next. `status` shows
+`body_includes`; an index built before this says "text".
+
+**Recall benchmark** (`eval_recall.py`, 2026-11-09). Answer keys in
+`eval/keys/` list the articles a change really affects, confirmed by a
+writer. The script scores SHORTLIST recall (free, no model call: what
+reached the model) and, with `--triage`, PLAN recall (after triage),
+lists what was missed at each stage, and lists plan articles not in the
+key as "extra" rather than wrong. Run it before and after any change to
+discovery. The first key, `launchers-content-tab`, is a DRAFT: every
+Launcher article plus the two Unified Content Experience articles,
+pending a writer's review.
 
 The index is built all-or-nothing: a build writes a fresh database and
 swaps it in only once every article read has succeeded, so a failed
@@ -541,6 +591,11 @@ files are fixed snapshots; the knowledge index is the up-to-date source.
 - **Compare discovery modes on more tickets.** Index became the ticket-run
   default after one broad and one narrow ticket (2026-11-07); `both` is
   there to check whether the title pass keeps finding real gaps.
+- **More answer keys.** The benchmark has one draft key; recall on one
+  ticket says little. Each real ticket run whose plan a writer corrects
+  is a key waiting to be written down.
+- **Text inside screenshots (OCR, tesseract) and semantic search**
+  (embeddings beside the keyword search), planned together.
 - **Validate recall** against a known set of real articles in the
   correct workspaces (everything tested before 2026-10-29 was against the
   wrong one).

@@ -110,14 +110,49 @@ FOCUS_WEIGHT = 2.0
 _FOCUS_ALIASES = {"popups": "pop ups", "popup": "pop up"}
 
 
+# What an article's indexed body is made of, recorded in the index's meta
+# so `status` shows whether an index predates a change to it.
+BODY_INCLUDES = "text, image alt text"
+
+
 class IndexBuildIncomplete(RuntimeError):
     """An article could not be read, so this build must not replace the index."""
 
 
 # --- building ---------------------------------------------------------------
 
+# Alt text that says nothing about the image: a bare file name, a generic
+# word, or an id. Kept out so it doesn't add noise to every article.
+_GENERIC_ALT = {"image", "img", "screenshot", "screen shot", "picture", "pic", "photo", "gif", "png",
+                "jpg", "jpeg", "icon", "logo", "untitled", "blank"}
+_ALT_EXT_RE = re.compile(r"\.(png|jpe?g|gif|svg|webp|bmp)$", re.IGNORECASE)
+
+
+def _alt_text(alt):
+    """An image's alt text as indexable words, or "" when it carries none.
+    "Click_launchers.png" -> "Click launchers"."""
+    text = _ALT_EXT_RE.sub("", (alt or "").strip())
+    text = re.sub(r"[_\-]+", " ", text)
+    text = " ".join(text.split())
+    words = re.findall(r"[A-Za-z]{2,}", text)
+    if not words or text.lower() in _GENERIC_ALT or re.fullmatch(r"[0-9a-fA-F ]{8,}", text):
+        return ""
+    if len(words) == 1 and re.fullmatch(r"(image|img|screenshot)\s*\d*", text.lower()):
+        return ""
+    return text
+
+
 def _text_of(html_content):
-    text = BeautifulSoup(html_content or "", "html.parser").get_text("\n")
+    """An article's indexable text: its visible text, plus each image's alt
+    text where the image sits (2026-11-09). Screenshots carry much of an
+    article's context ("Customize a Launcher": 11 images, 335 words, and
+    "Dashboard" only in its screenshots), and the alt text is the part of
+    that we can read for free. Text inside the images (OCR) is not read."""
+    soup = BeautifulSoup(html_content or "", "html.parser")
+    for img in soup.find_all("img"):
+        alt = _alt_text(img.get("alt"))
+        img.replace_with(f"\n{alt}\n" if alt else "")
+    text = soup.get_text("\n")
     text = _TERM_RE.sub(r"\1", text)
     text = _SNIPPET_RE.sub("", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -210,6 +245,7 @@ def build(db_path=DEFAULT_DB_PATH, client=None, workspace_ids=None):
                 ("built_at", datetime.now(timezone.utc).isoformat(timespec="seconds")),
                 ("articles", str(len(rows))),
                 ("per_workspace", json.dumps(per_workspace)),
+                ("body_includes", BODY_INCLUDES),
             ])
             conn.commit()
         finally:
@@ -241,6 +277,8 @@ def status(db_path=DEFAULT_DB_PATH):
             "age_hours": round((datetime.now(timezone.utc) - built_at).total_seconds() / 3600, 1),
             "articles": int(meta["articles"]),
             "per_workspace": json.loads(meta.get("per_workspace", "{}")),
+            # An index built before alt text was read has no such key.
+            "body_includes": meta.get("body_includes", "text"),
         }
     except (sqlite3.Error, KeyError, ValueError) as exc:
         return {"exists": True, "error": f"{type(exc).__name__}: {exc}"}
@@ -340,6 +378,55 @@ def search(query, k=40, workspace=None, db_path=DEFAULT_DB_PATH, focus=None):
     conn.row_factory = sqlite3.Row
     try:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def about(names, query, workspace=None, k=200, db_path=DEFAULT_DB_PATH):
+    """Every article whose TITLE or CATEGORY names one of `names` (content
+    types such as "Launchers"), up to `k`, ranked by how well its text
+    matches `query`. Same result shape as search(); `snippet` shows the
+    passage that best matches `query`. This is the content-type sweep
+    (kb_search.py): an article titled "Customize a Launcher" or filed under
+    "In-app Content > Launcher" is about Launchers whatever else it says,
+    so it must not depend on ranking well against a change note's wording."""
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"No knowledge index at {db_path}; run: python3 doc_sync/kb_index.py build")
+    names_match = _focus_query(names)
+    if not names_match:
+        return []
+    query_match = _match_query(query)
+    # Every swept article matches the OR (its title or category holds one of
+    # the names), so the second clause only ranks, never filters.
+    expr = f"{{title category_path}} : ({names_match})"
+    expr += f" AND ({query_match} OR {names_match})" if query_match else ""
+    sql = (
+        "SELECT article_id, title, category_path, workspace, version_id, url, "
+        "snippet(articles, 2, '[', ']', '…', 16) AS snippet, "
+        f"bm25(articles, {_BM25_WEIGHTS}) AS score FROM articles WHERE articles MATCH ?"
+    )
+    params = [expr]
+    where, extra = _workspace_filter(workspace)
+    sql += where + " ORDER BY score LIMIT ?"
+    params += extra + [k]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+
+def count_about(names, workspace=None, db_path=DEFAULT_DB_PATH):
+    """How many articles about() would return with no limit."""
+    names_match = _focus_query(names)
+    if not names_match:
+        return 0
+    where, extra = _workspace_filter(workspace)
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute("SELECT count(*) FROM articles WHERE articles MATCH ?" + where,
+                            [f"{{title category_path}} : ({names_match})"] + extra).fetchone()[0]
     finally:
         conn.close()
 

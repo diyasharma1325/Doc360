@@ -102,6 +102,35 @@ INDEX_PRODUCT_CONTEXT_MAX_BYTES = 90_000
 # feedback join the shortlist (see find_candidates_indexed).
 INDEX_FEEDBACK_EXTRA = 12
 
+# The content-type sweep (2026-11-09). Every article whose TITLE or
+# CATEGORY names a content type the change affects joins the shortlist,
+# whatever its body ranks: on a DAP for Web Launchers ticket, ranking alone
+# shortlisted 12 of the 25 Launcher articles, because "Dashboard" and
+# "Studio" articles outranked "What are Launchers?". Only real content
+# types are swept; a UI surface the change names ("Dashboard", "Studio",
+# "Content tab") is in hundreds of articles and would sweep in everything.
+# Keys are the normalized name (see _type_key), values what is searched.
+CONTENT_TYPES = {
+    "flow": ["Flows"],
+    "smarttip": ["Smart Tips"],
+    "beacon": ["Beacons"],
+    "popup": ["Pop-ups", "Popups"],
+    "launcher": ["Launchers"],
+    "blocker": ["Blockers"],
+    "survey": ["Surveys"],
+    "tasklist": ["Task List"],
+    "selfhelp": ["Self Help"],
+    "cue": ["Cues"],
+    "staticcontent": ["Static Content"],
+}
+# At most this many swept articles, best match to the change first. One
+# type is ~10-50 articles in DAP for Web; Flows (~190) and Self Help (~150)
+# are the large ones, and the cut is reported on the plan.
+SWEEP_MAX = 120
+# Triage reads the shortlist this many entries per call, so a sweep can
+# make the shortlist several times longer than one call should carry.
+TRIAGE_BATCH = 40
+
 # Prepended to the triage request in "index" mode only. kb_search_prompt.md
 # describes a full title list, which a shortlist isn't — saying so here,
 # rather than editing that file, keeps "titles" mode's prompt unchanged.
@@ -112,6 +141,17 @@ _SHORTLIST_NOTE = (
     "matches can be incidental: select an article only if it actually documents "
     "the feature or workflow this change note describes, judged by its title, "
     "category and excerpt together.\n\n"
+)
+
+# Prepended when the shortlist holds swept articles (entries marked
+# "about: <type>"; see CONTENT_TYPES).
+_SWEEP_NOTE = (
+    "Entries marked `about: <content type>` are in the list because their title or category "
+    "is about a content type this change affects, not because of a keyword match. Judge each "
+    "against the change: select it if it describes anything the change alters (where the "
+    "content type is found, how it's created, edited, copied, published, deleted or managed, "
+    "or the old wording), even if only in passing. Leave it out only if it plainly can't be "
+    "affected. The excerpt is the passage closest to the change's wording.\n\n"
 )
 
 # Document360 splits content into entirely separate project versions
@@ -245,12 +285,14 @@ def fetch_kb_articles(client=None, project_version_id=None, product_line=DEFAULT
 
 def _listing_line(a):
     """`[id] title (category path)` — the "titles" mode format, byte for
-    byte. A shortlist entry from "index" mode also carries `workspace` and
-    `snippet`, which are added only when present."""
+    byte. A shortlist entry from "index" mode also carries `workspace`,
+    `about` (a swept content type) and `snippet`, added only when present."""
     path = a["category_path"]
     if a.get("workspace"):
         path = f"{a['workspace']} > {path}"
     line = f"- [{a['id']}] {a['title']} ({path})"
+    if a.get("about"):
+        line += f"  about: {a['about']}"
     if a.get("snippet"):
         line += "\n    excerpt: " + " ".join(a["snippet"].split())
     return line
@@ -321,10 +363,18 @@ def triage(change_note, articles, shortlist=False, product_lines=None, include_p
             "Explicitly UNAFFECTED (do not select an article just for covering one "
             "of these): " + ", ".join(change_note.unaffected_content_types)
         )
+    old_terms = _old_terms(change_note)
+    if old_terms:
+        note_lines.append(
+            "Old wording (what articles written before this change call the old state; an "
+            "article that still uses it is likely outdated): " + ", ".join(old_terms)
+        )
     prompt = ("\n".join(note_lines) + _revision_block(revision)
               + f"\n\nKnowledge base articles ({len(articles)} total):\n{listing}")
     if shortlist:
         prompt = _SHORTLIST_NOTE + prompt
+        if any(a.get("about") for a in articles):
+            prompt = _SWEEP_NOTE + prompt
     if title_check:
         prompt = _TITLE_CHECK_NOTE + prompt
     system = _load_prompt(product_lines, include_products=include_products)
@@ -397,6 +447,26 @@ def _triage_gemini(system, prompt, label="triage"):
     return list(dict(function_call.args).get("candidates", []))
 
 
+def _type_key(name):
+    """"Pop-ups" / "Popups" / "pop up" -> "popup"; "Smart Tips" -> "smarttip"."""
+    key = re.sub(r"[^a-z]", "", (name or "").lower())
+    return key[:-1] if key.endswith("s") else key
+
+
+def swept_types(change_note):
+    """The affected content types that get a sweep, as {display name: [search
+    names]}, in the change note's order. Anything not in CONTENT_TYPES
+    ("Dashboard", "Content tab") is left to the ranked search."""
+    names = list(change_note.affected_content_types or [])
+    names.extend(c.content_type for c in (change_note.changes or []))
+    out = {}
+    for name in names:
+        terms = CONTENT_TYPES.get(_type_key(name))
+        if terms and terms[0] not in out:
+            out[terms[0]] = terms
+    return out
+
+
 def _index_query(change_note):
     """The text "index" mode searches with: what the articles that are now
     WRONG would say. So the feature area, summary, the old wording (per
@@ -404,8 +474,11 @@ def _index_query(change_note):
     affected-content-types list. Deliberately left out: `new` (a stale
     article doesn't contain the new wording yet), and `notes` plus
     `unaffected_content_types` — exclusion language like "Pop-ups did NOT
-    move" is exactly what once mined wrong keywords into discovery."""
+    move" is exactly what once mined wrong keywords into discovery.
+    The old terms (stated or suggested) are added: they are the words an
+    outdated article actually contains ("Widgets page")."""
     parts = [change_note.feature_area, change_note.summary]
+    parts.extend(_old_terms(change_note))
     if change_note.changes:
         for c in change_note.changes:
             parts.extend([c.content_type, c.old])
@@ -424,6 +497,11 @@ def _index_focus(change_note):
     names.extend(c.content_type for c in (change_note.changes or []))
     names.append(re.sub(r"[-_]+", " ", change_note.feature_area or ""))
     return [n for n in names if n and n.strip()]
+
+
+def _old_terms(change_note):
+    get = getattr(change_note, "all_old_terms", None)
+    return get() if get else []
 
 
 def index_available(db_path=kb_index.DEFAULT_DB_PATH):
@@ -466,10 +544,16 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
     query = _index_query(change_note)
     focus = _index_focus(change_note)
 
+    # The per-workspace cap only balances workspaces against each other, so
+    # a single-workspace ticket gets the whole shortlist: on a DAP for Web
+    # Launchers ticket the cap of 12 left out most of the 103 articles
+    # that mention Launchers (2026-11-09).
+    per_workspace = INDEX_PER_WORKSPACE if len(names) > 1 else INDEX_SHORTLIST_MAX
+
     def run(focus):
         hits = []
         for name in names:
-            hits.extend(kb_index.search(query, k=INDEX_PER_WORKSPACE, workspace=name, db_path=db_path, focus=focus))
+            hits.extend(kb_index.search(query, k=per_workspace, workspace=name, db_path=db_path, focus=focus))
         return hits
 
     hits = run(focus)
@@ -493,14 +577,36 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
         direct = kb_index.search(query, k=INDEX_RARE_FEATURE_MAX, workspace=names, db_path=db_path, focus=[feature])
         direct_ids = {h["article_id"] for h in direct}
         hits = direct + [h for h in hits if h["article_id"] not in direct_ids]
-    shortlist = [{
-        "id": h["article_id"],
-        "title": h["title"],
-        "category_path": h["category_path"],
-        "workspace": h["workspace"],
-        "version_id": h["version_id"],
-        "snippet": h["snippet"],
-    } for h in hits[:INDEX_SHORTLIST_MAX]]
+
+    def entry(h, about=None):
+        e = {"id": h["article_id"], "title": h["title"], "category_path": h["category_path"],
+             "workspace": h["workspace"], "version_id": h["version_id"], "snippet": h["snippet"]}
+        if about:
+            e["about"] = about
+        return e
+
+    # The content-type sweep goes first (see CONTENT_TYPES), then the ranked
+    # body search fills its own INDEX_SHORTLIST_MAX slots on top of it.
+    # SWEEP_MAX is shared fairly: each type may use an equal part of what's
+    # left, so on a Flows + Smart Tips ticket Flows (~190) can't take it all.
+    shortlist, have = [], set()
+    types = list(swept_types(change_note).items())
+    for i, (display, terms) in enumerate(types):
+        budget = (SWEEP_MAX - len(shortlist)) // (len(types) - i)
+        total = kb_index.count_about(terms, names, db_path)
+        swept = kb_index.about(terms, query, workspace=names, k=budget + len(have), db_path=db_path)
+        added = 0
+        for h in swept:
+            if added >= budget:
+                break
+            if h["article_id"] not in have:
+                have.add(h["article_id"])
+                shortlist.append({**entry(h, about=display), "about_total": total})
+                added += 1
+        print(f"    (sweep: {added} of {total} article(s) about {display} shortlisted)")
+    ranked = [h for h in hits if h["article_id"] not in have][:INDEX_SHORTLIST_MAX]
+    have.update(h["article_id"] for h in ranked)
+    shortlist += [entry(h) for h in ranked]
 
     # A re-plan can ask for articles the first search never shortlisted
     # ("also include Task List articles"); triage can only pick from what
@@ -510,7 +616,6 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
     # notes") may add an article back here, which is harmless: the model is
     # told to apply the feedback, and only what it selects is kept.
     if revision and revision.get("feedback"):
-        have = {a["id"] for a in shortlist}
         extra = [h for h in kb_index.search(revision["feedback"], k=INDEX_FEEDBACK_EXTRA * 2, workspace=names,
                                             db_path=db_path)
                  if h["article_id"] not in have][:INDEX_FEEDBACK_EXTRA]
@@ -524,9 +629,19 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
         return [], [], []
 
     product_lines = _index_product_lines(names)
-    found = triage(change_note, shortlist, shortlist=True, product_lines=product_lines,
-                   include_products=product_lines is not None, provider=provider, revision=revision)
-    kept = _with_workspace(_only_shown(found, shortlist), shortlist)
+    found = []
+    batches = [shortlist[i:i + TRIAGE_BATCH] for i in range(0, len(shortlist), TRIAGE_BATCH)]
+    for i, batch in enumerate(batches, 1):
+        label = "triage" if len(batches) == 1 else f"triage {i}/{len(batches)}"
+        picked = triage(change_note, batch, shortlist=True, product_lines=product_lines,
+                        include_products=product_lines is not None, provider=provider, revision=revision,
+                        label=label)
+        found.extend(_only_shown(picked, batch))
+    seen, kept = set(), []
+    for c in _with_workspace(found, shortlist):
+        if c["article_id"] not in seen:
+            seen.add(c["article_id"])
+            kept.append(c)
     return [c["article_id"] for c in kept], kept, shortlist
 
 

@@ -21,6 +21,14 @@ Attachments are read as text first (pdf_text.py). One that can't be read
 (too big, too long, not a PDF, a scanned image) does not stop the run; it
 is recorded on the ticket as a comment, so nobody assumes it was used.
 
+OLD WORDING (2026-11-09). Outdated articles describe the old state in the
+old words, so those words are what discovery searches for. Intake takes
+them from the ticket (`old_terms`); when the ticket gives none, a second,
+small model call suggests some from the product reference for the
+ticket's product lines (`old_terms_suggested`), and a comment shows them
+to the writer to confirm or correct (`ticket_run.py replan --old-terms`).
+A failed suggestion call never stops intake.
+
     python3 doc_sync/ticket_intake.py <run> [--provider gemini]
 """
 import argparse
@@ -38,11 +46,16 @@ load_dotenv(THIS_DIR.parent / ".env")
 
 import claude_call
 import pdf_text
+import product_context
 import ticket
 import workspaces
 from change_note import ChangeNote, ContentChange, save_change_note
 
 PROMPT_PATH = THIS_DIR / "ticket_intake_prompt.md"
+OLD_TERMS_PROMPT_PATH = THIS_DIR / "old_terms_prompt.md"
+# The suggestion call carries the product reference for the ticket's lines
+# up to this size (all four DAP surfaces: ~105 KB; all six: ~180 KB).
+OLD_TERMS_CONTEXT_MAX_BYTES = 120_000
 GEMINI_MODEL = "gemini-3.5-flash"
 MAX_OUTPUT_TOKENS = 8192
 # Per attachment. A 300-page PRD is far more than intake needs to describe a
@@ -77,13 +90,36 @@ INTAKE_SCHEMA = {
                 "required": ["content_type", "old", "new"],
             },
         },
+        "old_terms": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Names the ticket or an attachment gives for the old state. Empty if it gives none.",
+        },
         "notes": {"type": "string"},
     },
     "required": [
         "feature_area", "summary", "old", "new", "effective_date", "product_lines",
         "product_lines_quote", "affected_content_types", "unaffected_content_types",
-        "changes", "notes",
+        "changes", "old_terms", "notes",
     ],
+}
+
+OLD_TERMS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "terms": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string"},
+                    "basis": {"type": "string", "description": "Where it came from, in a short phrase."},
+                },
+                "required": ["term", "basis"],
+            },
+        },
+    },
+    "required": ["terms"],
 }
 
 
@@ -148,6 +184,65 @@ def _extract_gemini(system, request):
     if call is None:
         raise RuntimeError("Gemini did not return the expected function call.")
     return dict(call.args)
+
+
+def _clean_terms(terms):
+    out = []
+    for t in terms or []:
+        t = " ".join(str(t).split())
+        if t and t.lower() not in [o.lower() for o in out]:
+            out.append(t)
+    return out
+
+
+def _suggest_old_terms(request, result, product_lines, provider):
+    """Old terms suggested from the product reference for `product_lines`,
+    as [{term, basis}], for a ticket that stated none. Claude only: on the
+    Gemini fallback this returns [] and the writer is asked instead."""
+    if provider != "claude":
+        return []
+    files = product_context.files_for_lines(product_lines)
+    parts = product_context.prompt_parts_for_lines(product_lines) \
+        if product_context.size_of(files) <= OLD_TERMS_CONTEXT_MAX_BYTES else []
+    system = OLD_TERMS_PROMPT_PATH.read_text() + "".join(parts)
+    user = "\n".join([
+        request,
+        "",
+        "What intake extracted:",
+        f"- summary: {result.get('summary', '')}",
+        f"- old: {result.get('old', '')}",
+        f"- new: {result.get('new', '')}",
+        f"- affected: {', '.join(result.get('affected_content_types') or [])}",
+    ])
+    answer = claude_call.generate(system=system, user=user, schema=OLD_TERMS_SCHEMA,
+                                  label="old terms", max_tokens=2048)
+    seen, out = set(), []
+    for t in answer.get("terms") or []:
+        term = " ".join((t.get("term") or "").split())
+        if term and term.lower() not in seen:
+            seen.add(term.lower())
+            out.append({"term": term, "basis": (t.get("basis") or "").strip()})
+    return out[:6]
+
+
+def _old_terms_comment(stated, suggested, error=None):
+    if stated:
+        return ("I'll search for articles that still use the old wording from the ticket: "
+                + ", ".join(f"**{t}**" for t in stated) + ".")
+    lines = ["The ticket doesn't say what the product called this **before** the change. Outdated "
+             "articles still use the old words, so they're what finds them."]
+    if suggested:
+        lines += ["", "I'll also search for these old terms, **suggested** from the product reference. "
+                  "Please confirm or correct them:", ""]
+        lines += [f"- **{s['term']}** ({s['basis']})" if s.get("basis") else f"- **{s['term']}**"
+                  for s in suggested]
+    elif error:
+        lines += ["", f"I couldn't suggest any (`{error}`)."]
+    else:
+        lines += ["", "I couldn't find any in the product reference either."]
+    lines += ["", "To correct them, reply on the plan with the old terms, and the next re-plan "
+              "searches for those instead."]
+    return "\n".join(lines)
 
 
 def _valid_product_lines(names):
@@ -240,14 +335,25 @@ def run_intake(run, provider=claude_call.DEFAULT_PROVIDER):
         affected_content_types=list(result.get("affected_content_types") or []),
         unaffected_content_types=list(result.get("unaffected_content_types") or []),
         changes=[ContentChange(**c) for c in result.get("changes") or []],
+        old_terms=_clean_terms(result.get("old_terms")),
     )
+    suggested, suggest_error = [], None
+    if not note.old_terms:
+        try:
+            suggested = _suggest_old_terms(_request(tk, attachments), result, product_lines, provider)
+        except Exception as exc:  # a suggestion is a nicety: never stop intake over it
+            suggest_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+        note.old_terms_suggested = [s["term"] for s in suggested]
     path = save_change_note(note, str(rd / "change_note.json"))
+    ticket.record_comment(rd, _old_terms_comment(note.old_terms, suggested, suggest_error), label="old wording")
     ticket.record_event(rd, "intake", provider=provider, product_lines=product_lines,
                         product_lines_quote=result.get("product_lines_quote", ""),
                         attachments_read=[a["name"] for a in attachments],
-                        attachments_unread=[a["name"] for a in unread])
+                        attachments_unread=[a["name"] for a in unread],
+                        old_terms=note.old_terms, old_terms_suggested=suggested)
     return {"status": "ok", "change_note": path, "product_lines": product_lines,
-            "product_lines_quote": result.get("product_lines_quote", "")}
+            "product_lines_quote": result.get("product_lines_quote", ""),
+            "old_terms": note.old_terms, "old_terms_suggested": suggested}
 
 
 def main():
@@ -267,6 +373,17 @@ def main():
         raise SystemExit(1)
     print(f"Change note: {outcome['change_note']}")
     print(f"Product lines: {', '.join(outcome['product_lines'])}  (from: {outcome['product_lines_quote']!r})")
+    _print_old_terms(outcome)
+
+
+def _print_old_terms(outcome):
+    if outcome.get("old_terms"):
+        print(f"Old terms (from the ticket): {', '.join(outcome['old_terms'])}")
+    elif outcome.get("old_terms_suggested"):
+        print("Old terms (SUGGESTED, writer to confirm): "
+              + "; ".join(f"{s['term']} ({s['basis']})" for s in outcome["old_terms_suggested"]))
+    else:
+        print("Old terms: none stated or suggested")
 
 
 if __name__ == "__main__":
