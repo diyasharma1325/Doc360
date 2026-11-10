@@ -30,10 +30,13 @@ built.
   Mobile, Product Analytics and Whatfix Mirror. Anything else — Archived,
   Seek, and the non-public workspaces — is refused. Seek is excluded for
   now by decision (2026-11-04), not by limitation.
-- **Ticket runs search article bodies by default** (`index`, 2026-11-07),
-  scoped to the product lines the ticket names; `both` adds a strict title
-  check. `pipeline.py run` and `kb_search.py` still default to title-only
-  discovery. See "Discovery scope" and "Index discovery" below.
+- **Ticket runs use agent discovery by default** (`agent`, 2026-11-10):
+  Claude agents with read-only tools search and read a plain-text copy of
+  each workspace the ticket names. `index` (keyword search of article
+  bodies plus triage) was the default before; `both` adds a strict title
+  check to it. `pipeline.py run` and `kb_search.py` still default to
+  title-only discovery. See "Discovery scope", "Agent discovery" and
+  "Index discovery" below.
 
 ## Files
 
@@ -51,6 +54,8 @@ built.
 | `kb_search.py` | 2 | Live search, scoped to the change note's product lines (see "Discovery scope" below), two modes. **titles** (default): walks each workspace in scope and semantically triages every title against the change note (one model call per workspace). **index** (opt-in): searches article bodies in scope with `kb_index.py`, then triages only that shortlist. `pipeline.py` runs this automatically whenever `candidates.py` finds no tag_map entry — see "Live KB search" and "Index discovery" below |
 | `kb_index.py` | 2 (state) | Local full-text index of every published article body in the six live workspaces (`data/knowledge.db`, git-ignored). `build` (~30-40 min, read-only), `status`, `search`. Built all-or-nothing |
 | `old_terms_prompt.md` | 1 | Instructions for intake's second call, which suggests the old wording when the ticket gives none (see "Old wording") |
+| `kb_mirror.py` | 2 | Exports the knowledge index to a plain-text copy, one `.md` per article (`data/kb_mirror/`, git-ignored, seconds, no network), for agent discovery |
+| `discovery_agent.py`, `discovery_agent_prompt.md` | 2 | Agent discovery: read-only Claude agents over the copy, two runs per workspace within a per-ticket budget, verdicts with an edit/archive action, keyword-triage fallback (see "Agent discovery") |
 | `eval_recall.py`, `eval/keys/` | — | Discovery recall benchmark: scores the shortlist (free) and the plan (`--triage`) against writer-confirmed answer keys (see "Recall benchmark") |
 | `kb_search_prompt.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
 | `assess.py` | 3 | **Claude path — default**, through `claude_call.py`; no API key needed |
@@ -148,9 +153,10 @@ good as the product reference: the Unified Content Experience section in
 
 **Phase 1: the candidate plan** (`ticket_run.py`). Discovery runs on the
 change note within the ticket's product lines (see "Discovery scope"
-below), in **index** mode by default on ticket runs (decided 2026-11-07;
-`--discovery both` adds a strict title check, `--discovery titles` is
-title-only), and the result is recorded as a numbered **candidate plan**
+below), in **agent** mode by default on ticket runs (decided 2026-11-10,
+see "Agent discovery"; `--discovery index` is the keyword search,
+`--discovery both` adds a strict title check to it, `--discovery titles`
+is title-only), and the result is recorded as a numbered **candidate plan**
 comment, moving the ticket In Draft -> Peer review. The plan is saved as
 `plan.json`. `tag_map.json` is not used on ticket runs: its ids are mock
 fixtures, not live articles. A failed phase 1 records a "plan failed"
@@ -294,8 +300,9 @@ and a merged listing would go past what has been tested. Measured on
 101 candidates. Index mode on the same ticket: 24 shortlisted, one call,
 ~$0.13, 12 candidates. Titles sees only titles, so for a broad feature it
 over-includes by design; the candidate approval step is where that list
-gets cut. That comparison is why **ticket runs default to index mode**
-(`pipeline.py run` and `kb_search.py` still default to titles).
+gets cut. That comparison is why ticket runs defaulted to index mode
+from 2026-11-07 until agent mode replaced it (2026-11-10; `pipeline.py
+run` and `kb_search.py` still default to titles).
 
 **`--discovery both`** (2026-11-07) runs the two together: the index pass
 as usual, plus an independent title pass per workspace, run as a strict
@@ -563,9 +570,50 @@ writer. The script scores SHORTLIST recall (free, no model call: what
 reached the model) and, with `--triage`, PLAN recall (after triage),
 lists what was missed at each stage, and lists plan articles not in the
 key as "extra" rather than wrong. Run it before and after any change to
-discovery. The first key, `launchers-content-tab`, is a DRAFT: every
-Launcher article plus the two Unified Content Experience articles,
-pending a writer's review.
+discovery. Two keys, both confirmed by a writer (2026-11-10):
+`launchers-content-tab` (13 affected) and `ai-popups-deprecation` (7
+affected, one to archive; a HYPOTHETICAL change used only for testing).
+A key may also list `not_affected` articles (so a plan's wrong picks are
+told apart from articles nobody has reviewed), `ignore` (left out of
+scoring) and `"action": "archive"` on an expected article (scored against
+agent mode's archive flags). `--discovery agent` scores agent mode.
+
+## Agent discovery (`--discovery agent`, the ticket-run default)
+
+Why: index triage judges each shortlisted article from its title and a
+~30-word excerpt, with no tools, so it drops articles whose excerpt
+doesn't look affected and can never find one the keyword search didn't
+shortlist. Agent mode gives Claude read-only Grep / Glob / Read over a
+plain-text copy of the workspace (`kb_mirror.py`, made from the index),
+so it can open articles and follow leads.
+
+- One agent per workspace in scope, each in a temporary copy of that
+  workspace outside the repo. The index shortlist is its must-review
+  list: every article on it gets a verdict, and one it doesn't judge is
+  kept as "possibly affected".
+- Verdicts: affected, potentially affected, not affected, with an
+  action: edit, or **archive** (the article's main subject is removed).
+  The not-affected verdicts are saved in `plan.json` with reasons.
+- Two runs per workspace, merged (the most cautious verdict wins): one
+  run varies. A per-ticket budget (`--agent-budget`, or
+  `$DOC_SYNC_AGENT_BUDGET`, default $5) decides how: two full runs at
+  once when it covers them everywhere, else run 1 everywhere first and
+  then a full second run, a cheaper recheck of what run 1 cleared, or
+  nothing, by what's left. Each run is capped by the CLI's
+  `--max-budget-usd` (checked between turns, so a run can go a little
+  over).
+- Fallback: a workspace where no run succeeded is triaged the index way
+  instead, and the plan comment says so. Gemini (`--provider gemini`)
+  runs as index mode.
+- Cost: each step prints its model cost and logs a `cost` event in
+  `out/jira_log.json`. It is deliberately NOT in the plan, comments or
+  the artifact (writer decision, 2026-11-10).
+
+Measured 2026-11-10 (two confirmed keys, DAP for Web): agent 19 of 20
+affected articles found, plans of 7 and 19; index 17 of 20, plans of 18
+and 34. Agent ~$0.50 and ~1 minute per single-workspace ticket; index
+~$0.10 and ~25 seconds. Known gaps: phase 2 doesn't act on "archive" yet;
+headings aren't marked in the copy (the index stores flattened text).
 
 The index is built all-or-nothing: a build writes a fresh database and
 swaps it in only once every article read has succeeded, so a failed

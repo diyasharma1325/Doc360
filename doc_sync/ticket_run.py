@@ -96,7 +96,10 @@ def plan_comment(tk, note, plan, revised=False):
     cands = plan["candidates"]
     scope = ", ".join(plan["scope"])
     both = plan["discovery"] == "both"
-    if both:
+    agent = plan["discovery"] == "agent"
+    if agent:
+        how = f"an agent search that read the articles in {scope}, starting from {plan['scanned']:,} keyword match(es)"
+    elif both:
         how = f"a full-text search plus a title check, {plan['scanned']:,} listing(s) in {scope}"
     else:
         how = f"{plan['discovery']} search of {plan['scanned']:,} article(s) in {scope}"
@@ -120,7 +123,23 @@ def plan_comment(tk, note, plan, revised=False):
         "a full read against the change, and an edited draft if it needs one.",
         "",
     ]
-    if both:
+    if agent:
+        lines += [
+            "**Verdict:** **affected** means the article says something the change makes wrong; "
+            "**possibly** means it covers the feature but its text alone doesn't settle it. "
+            "**Archive** marks an article whose main subject the change removes: it likely needs "
+            "archiving and a redirect, not an edit.",
+            "",
+            "| # | Article | Workspace | Verdict | Why |",
+            "|---|---|---|---|---|",
+        ]
+        for c in cands:
+            verdict = "affected" if c.get("verdict") == "affected" else "possibly"
+            if c.get("action") == "archive":
+                verdict += ", **archive**"
+            lines.append(f"| {c['n']} | {_cell(c['title'])} | {_cell(c.get('workspace'))} | {verdict} | "
+                         f"{_cell(c.get('reason'))} |")
+    elif both:
         lines += [
             "**Found by** says which search found each article: **both** (strongest: two separate "
             "methods agree), **index** (its text mentions the change), or **titles** (its title "
@@ -139,6 +158,11 @@ def plan_comment(tk, note, plan, revised=False):
         ]
         for c in cands:
             lines.append(f"| {c['n']} | {_cell(c['title'])} | {_cell(c.get('workspace'))} | {_cell(c.get('reason'))} |")
+    if agent and plan.get("agent_fallbacks"):
+        where = ", ".join(plan["agent_fallbacks"])
+        lines += ["", f"**Note:** the full search didn't finish in **{where}**, so the articles there were "
+                      "picked by a quicker keyword search instead and are marked **possibly**. That search "
+                      "can miss articles; reply if you expected others."]
     for t in plan.get("swept") or []:
         checked = (f"all **{t['shortlisted']}** articles" if t["shortlisted"] == t.get("total")
                    else f"the **{t['shortlisted']}** closest to the change, of {t.get('total')}")
@@ -155,12 +179,24 @@ def plan_comment(tk, note, plan, revised=False):
     return "\n".join(lines)
 
 
-def _discover(run, note, discovery, provider, scope_override, revision=None):
+def _mode(discovery, provider):
+    """The discovery mode that will actually run (find_candidates_live's
+    own fallbacks): no index -> "titles"; "agent" with a non-Claude
+    provider -> "index"."""
+    if discovery != "titles" and not kb_search.index_available():
+        return "titles"
+    if discovery == "agent" and provider != "claude":
+        return "index"
+    return discovery
+
+
+def _discover(run, note, discovery, provider, scope_override, revision=None, agent_budget=None):
     """Run discovery and save plan.json. Returns the plan."""
-    mode = discovery if (discovery == "titles" or kb_search.index_available()) else "titles"
+    mode = _mode(discovery, provider)
     scope = kb_search.resolve_scope(note, scope_override, mode)
     _, found, scanned = kb_search.find_candidates_live(
         note, product_lines=scope_override, discovery=discovery, provider=provider, revision=revision,
+        agent_budget=agent_budget,
     )
     previous = load_plan(run)
     picked = {c["article_id"] for c in found}
@@ -184,24 +220,35 @@ def _discover(run, note, discovery, provider, scope_override, revision=None):
         "candidates": [
             {"n": i, "article_id": c["article_id"], "title": c.get("title", ""),
              "workspace": c.get("workspace"), "reason": c.get("reason", ""),
-             **({"found_by": c["found_by"]} if c.get("found_by") else {})}
+             **({"found_by": c["found_by"]} if c.get("found_by") else {}),
+             **{k: c[k] for k in ("verdict", "action", "evidence") if c.get(k)}}
             for i, c in enumerate(found, 1)
         ],
     }
+    if mode == "agent":
+        import discovery_agent
+        report = getattr(discovery_agent.find_candidates_agent, "last_report", None) or {}
+        plan["agent_fallbacks"] = [ws for ws, w in (report.get("workspaces") or {}).items() if w.get("fallback")]
+        plan["not_affected"] = [{"article_id": a["id"], "title": a["title"], "reason": a.get("verdict_reason")}
+                                for a in scanned if a.get("verdict") == "not_affected"]
     _save(run, "plan.json", plan)
     return plan
 
 
 # --- the steps -----------------------------------------------------------------
 
-# Ticket runs search article bodies by default (2026-11-07): on the Display
-# Names ticket, index found 12-14 focused candidates for ~$0.13 where titles
-# found 101 for ~$0.82. "both" adds a strict title check for thoroughness.
-TICKET_DISCOVERY = "index"
+# Ticket runs use AGENT discovery by default (2026-11-10): on the two confirmed
+# answer keys it found 19 of 20 affected articles against index mode's 17,
+# with plans about half the size (eval_recall.py; Launchers + AI Pop-ups).
+# It needs the knowledge index and Claude; without either it runs as
+# "index" or "titles" (_mode). Before that, "index" was the default (from
+# 2026-11-07: on the Display Names ticket it found 12-14 focused candidates
+# for ~$0.13 where titles found 101 for ~$0.82).
+TICKET_DISCOVERY = "agent"
 
 
 def run_phase1(run, discovery=TICKET_DISCOVERY, provider=claude_call.DEFAULT_PROVIDER,
-               product_lines=None):
+               product_lines=None, agent_budget=None):
     """In Draft -> Peer review, with the candidate plan as a comment."""
     rd = ticket.run_dir(run)
     tk = ticket.load_ticket(rd)
@@ -212,9 +259,10 @@ def run_phase1(run, discovery=TICKET_DISCOVERY, provider=claude_call.DEFAULT_PRO
         raise StepRefused(f"{tk['key']} already has a plan; use replan to change it.")
     note = load_change_note(str(_path(rd, "change_note.json")))
 
-    ticket.record_event(rd, "phase1_start", discovery=discovery, provider=provider)
+    ticket.record_event(rd, "phase1_start", discovery=discovery, provider=provider,
+                        **({"agent_budget_usd": agent_budget} if agent_budget else {}))
     try:
-        plan = _discover(rd, note, discovery, provider, product_lines)
+        plan = _discover(rd, note, discovery, provider, product_lines, agent_budget=agent_budget)
     except Exception as exc:
         ticket.record_comment(rd, (
             "Something went wrong while I was looking for the affected articles, so there is no "
@@ -238,7 +286,7 @@ def set_old_terms(rd, terms):
     return note
 
 
-def run_replan(run, feedback, provider=None, product_lines=None, old_terms=None):
+def run_replan(run, feedback, provider=None, product_lines=None, old_terms=None, agent_budget=None):
     """Re-plan from the writer's feedback; the ticket stays in Peer review.
     `old_terms` (a list) replaces the change note's old wording first."""
     rd = ticket.run_dir(run)
@@ -259,7 +307,8 @@ def run_replan(run, feedback, provider=None, product_lines=None, old_terms=None)
     scope_override = product_lines or plan.get("scope_override")
     revision = {"feedback": feedback, "previous": plan["candidates"]}
     try:
-        new_plan = _discover(rd, note, plan["discovery"], provider or plan["provider"], scope_override, revision)
+        new_plan = _discover(rd, note, plan["discovery"], provider or plan["provider"], scope_override, revision,
+                             agent_budget=agent_budget)
     except Exception as exc:
         ticket.record_comment(rd, (
             "Something went wrong while I was revising the plan:\n\n"
@@ -547,8 +596,11 @@ def main():
     p = sub.add_parser("phase1", help="In Draft -> Peer review: find candidates, record the plan")
     p.add_argument("run")
     p.add_argument("--discovery", choices=kb_search.DISCOVERY_MODES, default=TICKET_DISCOVERY,
-                   help="'index' (default): search article bodies. 'both': index plus a strict title "
-                        "check, merged with a Found by column. 'titles': every title only.")
+                   help="'agent' (default): Claude agents search and read a copy of the knowledge base. "
+                        "'index': keyword search of article bodies plus triage. 'both': index plus a strict "
+                        "title check, merged with a Found by column. 'titles': every title only.")
+    p.add_argument("--agent-budget", type=float, default=None,
+                   help="Agent discovery budget for the whole ticket, USD (default $DOC_SYNC_AGENT_BUDGET or 5)")
     p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER)
     p.add_argument("--product-lines", default=None, help="Override the ticket's product lines (comma-separated)")
 
@@ -561,6 +613,8 @@ def main():
     p.add_argument("--old-terms", default=None,
                    help="The writer's old wording (comma-separated), replacing intake's stated and "
                         "suggested old terms")
+    p.add_argument("--agent-budget", type=float, default=None,
+                   help="Agent discovery budget for this re-plan, USD (default $DOC_SYNC_AGENT_BUDGET or 5)")
 
     p = sub.add_parser("approve", help="Peer review -> For review: approve plan numbers")
     p.add_argument("run")
@@ -579,38 +633,64 @@ def main():
     p.add_argument("run")
 
     args = parser.parse_args()
+    meter = claude_call.CostMeter()
     try:
-        if args.command == "intake":
-            import ticket_intake
-            outcome = ticket_intake.run_intake(args.run, provider=args.provider)
-            if outcome["status"] == "bounced":
-                raise SystemExit("Bounced to To Do: " + " ".join(outcome["reasons"]))
-            print(f"Product lines: {', '.join(outcome['product_lines'])}")
-            ticket_intake._print_old_terms(outcome)
-        elif args.command == "phase1":
-            plan = run_phase1(args.run, args.discovery, args.provider,
-                              kb_search.parse_product_lines(args.product_lines))
-            print(f"Plan v{plan['version']}: {len(plan['candidates'])} candidate(s).")
-            show(args.run)
-        elif args.command == "replan":
-            plan = run_replan(args.run, args.feedback, args.provider,
-                              kb_search.parse_product_lines(args.product_lines),
-                              kb_search.parse_product_lines(args.old_terms))
-            print(f"Plan v{plan['version']}: {len(plan['candidates'])} candidate(s).")
-            show(args.run)
-        elif args.command == "approve":
-            articles = approve(args.run, args.selection)
-            print(f"Approved {len(articles)} article(s):")
-            for a in articles:
-                print(f"  {a['n']}. {a['title']}  ({a.get('workspace')})")
-        elif args.command == "phase2":
-            links = [l.strip() for l in (args.archived_targets or "").split(",") if l.strip()]
-            run_phase2(args.run, args.provider, links or None, args.confirm_overwrite)
-            show(args.run)
-        else:
-            show(args.run)
+        with meter:
+            _dispatch(args)
     except StepRefused as exc:
         raise SystemExit(f"Refused: {exc}")
+    finally:
+        _record_cost(args, meter)
+
+
+def _record_cost(args, meter):
+    """What this step spent on model calls, failed ones included: printed
+    and logged in out/jira_log.json as a "cost" event. NEVER in a comment,
+    the plan or the artifact (writer decision 2026-11-10): those are shared
+    with readers who don't need it. build_artifact.py doesn't render "cost"
+    events."""
+    if not meter.calls:
+        return
+    try:
+        ticket.record_event(ticket.run_dir(args.run), "cost", step=args.command, usd=round(meter.usd, 4),
+                            calls=meter.calls)
+    except Exception as exc:  # never let bookkeeping hide the step's own outcome
+        print(f"    (couldn't log the cost: {exc})")
+    print(f"Model cost for {args.command}: ${meter.usd:.2f} over {meter.calls} call(s) "
+          "(logged in out/jira_log.json, not shown on the ticket)")
+
+
+def _dispatch(args):
+    """Run one CLI step."""
+    if args.command == "intake":
+        import ticket_intake
+        outcome = ticket_intake.run_intake(args.run, provider=args.provider)
+        if outcome["status"] == "bounced":
+            raise SystemExit("Bounced to To Do: " + " ".join(outcome["reasons"]))
+        print(f"Product lines: {', '.join(outcome['product_lines'])}")
+        ticket_intake._print_old_terms(outcome)
+    elif args.command == "phase1":
+        plan = run_phase1(args.run, args.discovery, args.provider,
+                          kb_search.parse_product_lines(args.product_lines), args.agent_budget)
+        print(f"Plan v{plan['version']}: {len(plan['candidates'])} candidate(s).")
+        show(args.run)
+    elif args.command == "replan":
+        plan = run_replan(args.run, args.feedback, args.provider,
+                          kb_search.parse_product_lines(args.product_lines),
+                          kb_search.parse_product_lines(args.old_terms), args.agent_budget)
+        print(f"Plan v{plan['version']}: {len(plan['candidates'])} candidate(s).")
+        show(args.run)
+    elif args.command == "approve":
+        articles = approve(args.run, args.selection)
+        print(f"Approved {len(articles)} article(s):")
+        for a in articles:
+            print(f"  {a['n']}. {a['title']}  ({a.get('workspace')})")
+    elif args.command == "phase2":
+        links = [l.strip() for l in (args.archived_targets or "").split(",") if l.strip()]
+        run_phase2(args.run, args.provider, links or None, args.confirm_overwrite)
+        show(args.run)
+    else:
+        show(args.run)
 
 
 if __name__ == "__main__":

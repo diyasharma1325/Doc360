@@ -21,3 +21,5 @@ doc_sync/runs/
 
 # Discovery recall benchmark results (doc_sync/eval_recall.py) - local, rerunnable
 doc_sync/eval/results/
+doc_sync/data/kb_mirror/
+doc_sync/data/kb_mirror.building/

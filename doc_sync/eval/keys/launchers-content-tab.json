@@ -1,8 +1,8 @@
 {
   "name": "launchers-content-tab",
-  "status": "draft",
-  "reviewed_by": "",
-  "notes": "Drafted 2026-11-09 from the writer's request on WSC-900004: 'i want all affected articles related to launchers'. Every DAP for Web article whose title or category names Launchers, plus the two Unified Content Experience articles. NOT yet reviewed: a writer should remove any that the change doesn't actually affect and add any it does, then set status to 'confirmed' and fill in reviewed_by.",
+  "status": "confirmed",
+  "reviewed_by": "Diya Sharma",
+  "notes": "Confirmed 2026-11-10 by Diya Sharma, reviewing the 27 draft articles plus 2 the agent found (Cannot see content created on Dashboard; Overview of the Whatfix Guidance Dashboard). `expected` = affected; `not_affected` = reviewed and ruled out (true negatives). Corrected 2026-11-10: 'Get Launcher analytics using Product Analytics', 'Launcher as a Visibility Rule' and 'Launchers Best Practices' (Launcher category) are NOT affected (marked by mistake).",
   "ticket": {
     "summary": "Content Widget merger changes for Launchers.",
     "description": "As part of The Unified Content Experience, launchers are also becoming part of the Content Tab and will now be visible under \"Content\" on the studio as well aqs the Dashboard. The Launcher configurations like create, edit, delete, copy etc. will also behave respectively. This change affects the DAP for Web product line."
@@ -29,26 +29,6 @@
   },
   "expected": [
     {
-      "article_id": "6d55078d-2abc-4623-9202-2c23027afbfc",
-      "title": "Launchers Best Practices",
-      "category_path": "Best Practices"
-    },
-    {
-      "article_id": "f3f7c4d8-a31c-4159-9202-44aaeaf0c110",
-      "title": "Unified Content Experience",
-      "category_path": "Create Whatfix Content"
-    },
-    {
-      "article_id": "86246bd4-a468-4beb-8391-ecfb5ce3a77b",
-      "title": "Add a Launcher to an existing collection",
-      "category_path": "Create Whatfix Content > In-app Content > Launcher"
-    },
-    {
-      "article_id": "873bf5b0-0ab3-4f19-ae27-626f5f64fc23",
-      "title": "Add a Survey to a Launcher",
-      "category_path": "Create Whatfix Content > In-app Content > Launcher"
-    },
-    {
       "article_id": "a1acbfb6-22ff-4803-ad63-2a6221e5da5e",
       "title": "Create a Launcher",
       "category_path": "Create Whatfix Content > In-app Content > Launcher"
@@ -66,21 +46,6 @@
     {
       "article_id": "be124ddc-bbbc-40fe-8c49-4133830a4797",
       "title": "Edit a Launcher",
-      "category_path": "Create Whatfix Content > In-app Content > Launcher"
-    },
-    {
-      "article_id": "7a85f488-95b5-4877-9ebd-ea71f106a483",
-      "title": "Get Launcher analytics using Product Analytics",
-      "category_path": "Create Whatfix Content > In-app Content > Launcher"
-    },
-    {
-      "article_id": "a343b7fa-4567-4cbc-aa17-aa9189577431",
-      "title": "Launcher as a Visibility Rule",
-      "category_path": "Create Whatfix Content > In-app Content > Launcher"
-    },
-    {
-      "article_id": "4fb769d0-211c-4898-b090-f734aa54e979",
-      "title": "Launchers Best Practices",
       "category_path": "Create Whatfix Content > In-app Content > Launcher"
     },
     {
@@ -104,14 +69,56 @@
       "category_path": "Create Whatfix Content > In-app Content > Launcher"
     },
     {
-      "article_id": "913c2c07-0afa-4798-8ced-1af1b1c98f16",
-      "title": "What are Launchers?",
-      "category_path": "Create Whatfix Content > In-app Content > Launcher"
-    },
-    {
       "article_id": "a37995a6-b737-46bd-a1d4-c7cdfde45861",
       "title": "Show a Launcher based on User Input",
       "category_path": "Create Whatfix Content > New Visibility Rules > New Visibility Rules for Widgets > New Visibility Rules Use Cases"
+    },
+    {
+      "article_id": "9c6f64ae-5b06-4744-a6af-c8fbc7ddecd4",
+      "title": "Launcher does not appear on the application",
+      "category_path": "Troubleshooting > Launchers"
+    },
+    {
+      "article_id": "d594a0b2-00cc-4eb1-a135-181f2281552d",
+      "title": "Troubleshoot Launchers using Diagnostics",
+      "category_path": "Troubleshooting > Whatfix Diagnostics in Studio"
+    },
+    {
+      "article_id": "07c94223-7723-4d74-b389-d01272c659ca",
+      "title": "Cannot see content created on Dashboard",
+      "category_path": "Troubleshooting > Dashboard"
+    },
+    {
+      "article_id": "41776112-a204-44e7-8438-e0e0c4a9bbf6",
+      "title": "Overview of the Whatfix Guidance Dashboard",
+      "category_path": "Whatfix Web Overview"
+    }
+  ],
+  "not_affected": [
+    {
+      "article_id": "6d55078d-2abc-4623-9202-2c23027afbfc",
+      "title": "Launchers Best Practices",
+      "category_path": "Best Practices"
+    },
+    {
+      "article_id": "f3f7c4d8-a31c-4159-9202-44aaeaf0c110",
+      "title": "Unified Content Experience",
+      "category_path": "Create Whatfix Content"
+    },
+    {
+      "article_id": "86246bd4-a468-4beb-8391-ecfb5ce3a77b",
+      "title": "Add a Launcher to an existing collection",
+      "category_path": "Create Whatfix Content > In-app Content > Launcher"
+    },
+    {
+      "article_id": "873bf5b0-0ab3-4f19-ae27-626f5f64fc23",
+      "title": "Add a Survey to a Launcher",
+      "category_path": "Create Whatfix Content > In-app Content > Launcher"
+    },
+    {
+      "article_id": "913c2c07-0afa-4798-8ced-1af1b1c98f16",
+      "title": "What are Launchers?",
+      "category_path": "Create Whatfix Content > In-app Content > Launcher"
     },
     {
       "article_id": "57b13173-7e4b-4579-8757-93f79bf25c5d",
@@ -144,11 +151,6 @@
       "category_path": "FAQs > Whatfix Content > Launchers"
     },
     {
-      "article_id": "9c6f64ae-5b06-4744-a6af-c8fbc7ddecd4",
-      "title": "Launcher does not appear on the application",
-      "category_path": "Troubleshooting > Launchers"
-    },
-    {
       "article_id": "44db2838-3bf5-4c41-ad98-d42f0a5f1b8e",
       "title": "Launcher not latching properly to the selected element",
       "category_path": "Troubleshooting > Launchers"
@@ -159,9 +161,19 @@
       "category_path": "Troubleshooting > Launchers"
     },
     {
-      "article_id": "d594a0b2-00cc-4eb1-a135-181f2281552d",
-      "title": "Troubleshoot Launchers using Diagnostics",
-      "category_path": "Troubleshooting > Whatfix Diagnostics in Studio"
+      "article_id": "7a85f488-95b5-4877-9ebd-ea71f106a483",
+      "title": "Get Launcher analytics using Product Analytics",
+      "category_path": "Create Whatfix Content > In-app Content > Launcher"
+    },
+    {
+      "article_id": "a343b7fa-4567-4cbc-aa17-aa9189577431",
+      "title": "Launcher as a Visibility Rule",
+      "category_path": "Create Whatfix Content > In-app Content > Launcher"
+    },
+    {
+      "article_id": "4fb769d0-211c-4898-b090-f734aa54e979",
+      "title": "Launchers Best Practices",
+      "category_path": "Create Whatfix Content > In-app Content > Launcher"
     }
   ]
 }

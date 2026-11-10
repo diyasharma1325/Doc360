@@ -1,0 +1,175 @@
+{
+  "name": "ai-popups-deprecation",
+  "status": "confirmed",
+  "reviewed_by": "Diya Sharma",
+  "notes": "HYPOTHETICAL change (AI Pop-ups are NOT really being deprecated): a test ticket for discovery only; never draft or publish fixes from it. Confirmed 2026-11-10 by Diya Sharma from a combined list of both modes' picks plus a wording scan (25 articles). Scope: AI Pop-up generation, the AI generated image toggle and agentic Pop-up creation are removed; past release notes are historical (not affected). `action: archive` marks the article to archive rather than edit. `ignore`: excluded from scoring by the writer (a cloned test page).",
+  "ticket": {
+    "summary": "AI generated Popups being deprecated",
+    "description": "The AI based Popup generation feature is being removed from the Whatfix Studio and it will no long er be available as a feature to the users. The AI generated image toggle is going along with AI Popups. Agentic creation of Popups will not be supported after this change. Product lines: DAP for Web"
+  },
+  "change_note": {
+    "feature_area": "ai-popup-deprecation",
+    "summary": "The AI-based Popup generation feature is being removed from Whatfix Studio and will no longer be available. The AI generated image toggle is removed along with it, and agentic creation of Popups is no longer supported.",
+    "old": "Users could generate Popups with AI in Whatfix Studio, including an AI generated image toggle and agentic Popup creation.",
+    "new": "AI generated Popups, the AI generated image toggle, and agentic creation of Popups are no longer available in Whatfix Studio.",
+    "effective_date": "",
+    "notes": "No effective date stated. No old UI names (buttons, menus) given in the ticket. Manually created Popups are presumably still supported, but the ticket doesn't say so explicitly. Only the AI generation path is described as removed.",
+    "product_line": "DAP for Web",
+    "product_lines": [
+      "DAP for Web"
+    ],
+    "affected_content_types": [
+      "Popups",
+      "AI generated Popups",
+      "AI generated image toggle",
+      "Agentic creation of Popups"
+    ],
+    "unaffected_content_types": [],
+    "changes": [],
+    "old_terms": [],
+    "old_terms_suggested": [
+      "AI generated Popups",
+      "AI generated image toggle",
+      "Agentic creation of Popups",
+      "multi-template AI Pop-ups"
+    ]
+  },
+  "expected": [
+    {
+      "article_id": "993bdbfe-b87d-4aba-bd65-a13e67deee28",
+      "title": "Create Pop-ups with AI",
+      "category_path": "Create Whatfix Content > In-app Content > Pop-ups",
+      "action": "archive"
+    },
+    {
+      "article_id": "2af3eda3-1ff1-4594-9bbd-2113c6fcec03",
+      "title": "Whatfix Authoring Agents",
+      "category_path": "Whatfix AI Agents",
+      "action": "edit"
+    },
+    {
+      "article_id": "f412d54b-ba3f-4952-aeeb-ad93d9522182",
+      "title": "Features available in Whatfix",
+      "category_path": "Whatfix Web Overview",
+      "action": "edit"
+    },
+    {
+      "article_id": "048f5ff5-f297-42fd-b607-6c0e759b6169",
+      "title": "Whatfix Glossary",
+      "category_path": "Whatfix Web Overview",
+      "action": "edit"
+    },
+    {
+      "article_id": "7067b1a5-a554-4f54-8082-b9a3abfa2a51",
+      "title": "What are the AI features powered by Whatfix?",
+      "category_path": "FAQs > Whatfix Content > General",
+      "action": "edit"
+    },
+    {
+      "article_id": "91a93926-9844-4c32-818c-f7593418ebf2",
+      "title": "Pop-ups Best Practices",
+      "category_path": "Best Practices",
+      "action": "edit"
+    },
+    {
+      "article_id": "b111a817-84ef-4c0a-9520-1fff4911e7f7",
+      "title": "Pop-ups Best Practices",
+      "category_path": "Create Whatfix Content > In-app Content > Pop-ups",
+      "action": "edit"
+    }
+  ],
+  "not_affected": [
+    {
+      "article_id": "3ba08f7b-f6d3-48a8-b42a-146ab189eeaf",
+      "title": "What are Whatfix Popups?",
+      "category_path": "Create Whatfix Content > In-app Content > Pop-ups"
+    },
+    {
+      "article_id": "d0357743-a89a-42d1-8127-49a28580fbbc",
+      "title": "Create Popups with Templates",
+      "category_path": "Create Whatfix Content > In-app Content > Pop-ups"
+    },
+    {
+      "article_id": "7e66fb4f-b001-46dd-9787-1023ac995537",
+      "title": "Error: Couldn't create a Pop-up",
+      "category_path": "Troubleshooting > Pop-up"
+    },
+    {
+      "article_id": "1f5862c5-2b3f-44c4-b8ed-07d11cc843e2",
+      "title": "Can I use the existing Pop-up templates for Flow as Pop-up feature?",
+      "category_path": "FAQs > Whatfix Content > Pop-Ups"
+    },
+    {
+      "article_id": "2cc93e03-d047-46ea-b27d-81400975c819",
+      "title": "Can I switch between templates after creating a Pop-up?",
+      "category_path": "FAQs > Whatfix Content > Pop-Ups"
+    },
+    {
+      "article_id": "c845118c-2709-4e44-aa3d-b083b2d7223d",
+      "title": "Q3 R2 2025 Release",
+      "category_path": "Whatfix Release Notes"
+    },
+    {
+      "article_id": "c5d0c1e2-6c5a-4e78-9ada-2a52abf39ff0",
+      "title": "Q3R2 2026 Release",
+      "category_path": "Whatfix Release Notes"
+    },
+    {
+      "article_id": "b6fbd1b4-8d9e-40f3-95c5-a97e58964640",
+      "title": "How does Whatfix display multiple Pop-ups?",
+      "category_path": "FAQs > Whatfix Content > Pop-Ups"
+    },
+    {
+      "article_id": "9d07d966-950c-4b3a-aae7-7a95b3115556",
+      "title": "Schedule a Pop-up",
+      "category_path": "Create Whatfix Content > In-app Content > Pop-ups"
+    },
+    {
+      "article_id": "9b5291c4-0564-4b34-8f95-6de2e02f2447",
+      "title": "Preview pop-ups",
+      "category_path": "Create Whatfix Content > In-app Content > Pop-ups"
+    },
+    {
+      "article_id": "6cc38213-45b9-4d31-97dc-af7e6da6f804",
+      "title": "Create new Visibility Rules using AI",
+      "category_path": "Create Whatfix Content > New Visibility Rules > New Visibility Rules for Widgets"
+    },
+    {
+      "article_id": "0173e273-d865-4788-8a21-212507f3aa46",
+      "title": "Heap Integration",
+      "category_path": "Integration Hub"
+    },
+    {
+      "article_id": "b5051899-2707-4666-8f3e-b07ab1fd6021",
+      "title": "Past Release Notes (2020-2021)",
+      "category_path": "Whatfix Release Notes"
+    },
+    {
+      "article_id": "c46dc317-657b-4730-b1c3-08bfb0b09c0b",
+      "title": "Pop-up Analytics - New Guidance Analytics Dashboard",
+      "category_path": "Guidance Analytics > Whatfix Analytics > Guidance Analytics dashboard experience"
+    },
+    {
+      "article_id": "c6695b21-8820-4d63-87b0-7722577bb350",
+      "title": "Download Whatfix Preview extension using Whatfix Studio",
+      "category_path": "Create Whatfix Content > Preview Whatfix Content"
+    },
+    {
+      "article_id": "dda5724a-0a3a-481b-995d-e1d450aa6882",
+      "title": "Q3 R2 2021 Release",
+      "category_path": "Whatfix Release Notes"
+    },
+    {
+      "article_id": "e0d39404-7069-4bf8-b484-b559f4138251",
+      "title": "Analytics Summary - New Guidance analytics Dashboard",
+      "category_path": "Guidance Analytics > Whatfix Analytics > Guidance Analytics dashboard experience"
+    }
+  ],
+  "ignore": [
+    {
+      "article_id": "1fc3dcfe-2342-4cf4-8b5b-b75ab471e080",
+      "title": "Clone Testing - Q3 R2 Testing",
+      "category_path": "Create Whatfix Content > Translations"
+    }
+  ]
+}

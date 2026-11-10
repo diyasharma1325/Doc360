@@ -34,7 +34,8 @@ put it in a shell variable; zsh passes `$P` as one word and the command fails.
 
 - `.env` has `D360_API_KEY` (reads only, for discovery and assessment).
 - The `claude` CLI is logged in: `$P doc_sync/claude_call.py selftest` answers.
-- For index discovery (the default on ticket runs), a knowledge index exists:
+- For agent discovery (the default on ticket runs) and index discovery, a knowledge
+  index exists (agent mode makes its plain-text copy from it, in seconds):
   `$P doc_sync/kb_index.py status`. If it's over 48 hours old, say so and offer a
   rebuild (`$P doc_sync/kb_index.py build`, read-only, ~40 minutes, run in the
   background). Don't block the run on it.
@@ -85,13 +86,21 @@ $P doc_sync/ticket_run.py intake <name>
 ## Step 3: Phase 1, the candidate plan (In Draft -> Peer review)
 
 ```bash
-$P doc_sync/ticket_run.py phase1 <name>                    # index search (default)
-$P doc_sync/ticket_run.py phase1 <name> --discovery both   # index + a strict title check
+$P doc_sync/ticket_run.py phase1 <name>                     # agent search (default)
+$P doc_sync/ticket_run.py phase1 <name> --discovery index   # quicker keyword search + triage
 ```
 
-Use `both` when the writer asks for a thorough search, or the change is broad (many
-content types or surfaces). It adds a "Found by" column; `both` is the strongest
-signal. Takes a minute or two.
+The default runs Claude agents that search and read a copy of the knowledge base, two
+runs per product line, within a per-ticket budget (`--agent-budget`, default $5).
+Takes one to three minutes; run it in the background. Each plan row has a
+**verdict** (affected, or possibly) and articles to **archive** rather than edit are
+marked. If the plan has a "full search didn't finish" note, tell the writer which
+product line fell back to the keyword search. Use `--discovery index` only if the
+writer asks for a quick search.
+
+The step prints its model cost and logs it in `out/jira_log.json`. Don't put the
+cost in the plan, a comment or the artifact, and don't bring it up unless the writer
+asks: they decided (2026-11-10) it stays out of anything shared.
 
 Show the writer the plan: the latest `doc_sync/runs/<name>/out/comment-NN.txt`,
 as plain text, every row, numbered exactly as recorded. Then ask them to either
