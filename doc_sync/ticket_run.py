@@ -374,9 +374,10 @@ def approve(run, selection):
 # --- phase 2 -------------------------------------------------------------------
 
 # Outcomes that are final: a re-run of phase 2 skips these and retries the rest.
-DONE = ("draft_written", "draft_saved", "no_edit", "merge_conflict")
+DONE = ("draft_written", "draft_saved", "no_edit", "merge_conflict", "archive_recommended")
 
 RESULT_LABELS = {
+    "archive_recommended": "Archive (recommended)",
     "draft_written": "Draft written",
     "draft_saved": "Draft saved locally",
     "no_edit": "No edit needed",
@@ -405,9 +406,42 @@ class _LocalHTML:
         return {"data": {"html_content": self.html}}
 
 
-def _phase2_article(rd, note, a, client, assess, targets, used):
+def _phase2_archive(note, a, client, skip_ids):
+    """An approved "archive" article: no edit, a recommendation instead
+    (archive_plan.py). Never raises for a per-article problem."""
+    import archive_plan
+
+    base = {"n": a["n"], "article_id": a["article_id"], "title": a["title"], "workspace": a.get("workspace"),
+            "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    try:
+        live = client.get_article(a["article_id"])["data"]
+        rec = archive_plan.plan_for(note, a["article_id"], live.get("html_content") or "",
+                                    a.get("workspace") or "DAP for Web", skip_ids=skip_ids)
+    except Exception as exc:
+        return {**base, "outcome": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    return {**base, "outcome": "archive_recommended", "archive": rec,
+            "rationale": a.get("reason") or ""}
+
+
+def _archives_of(results, approved):
+    """[{article_id, title, url, redirect}] for every approved article whose
+    archive recommendation is done, for repointing links in the others."""
+    out = []
+    for a in approved["articles"]:
+        r = results["articles"].get(a["article_id"]) or {}
+        if r.get("outcome") == "archive_recommended":
+            rec = r["archive"]
+            out.append({"article_id": a["article_id"], "title": a["title"], "url": rec.get("archived_url") or "",
+                        "redirect": rec.get("redirect")})
+    return out
+
+
+def _phase2_article(rd, note, a, client, assess, targets, used, archives=()):
     """Assess one approved article and save or write its draft. Returns its
-    result record; never raises for a per-article problem."""
+    result record; never raises for a per-article problem. `archives`
+    (_archives_of) are articles being archived: if this one links to or
+    names one, its assessment is told to repoint that reference."""
+    import archive_plan
     import draft_writer
     import verify
 
@@ -415,10 +449,22 @@ def _phase2_article(rd, note, a, client, assess, targets, used):
             "at": time.strftime("%Y-%m-%d %H:%M:%S")}
     try:
         live = client.get_article(a["article_id"])["data"]
-        assessment = assess(a["article_id"], note, client=client)
+        html = live.get("html_content") or ""
+        refs = [x for x in archives if x["url"] and (archive_plan.links_to(html, {"url": x["url"]})
+                                                     or archive_plan.mentions(html, x))]
+        if refs:
+            extra = "\n".join(archive_plan.repoint_instruction(x["title"], x["url"], x["redirect"]) for x in refs)
+            assessment = assess(a["article_id"], note, client=client, extra=extra)
+            base["repoints"] = [x["title"] for x in refs]
+        else:
+            assessment = assess(a["article_id"], note, client=client)
     except Exception as exc:
         return {**base, "outcome": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
     base.update(confidence=assessment.confidence, rationale=assessment.rationale)
+    if refs and assessment.updated_html_content:
+        still = [x["title"] for x in refs if archive_plan.links_to(assessment.updated_html_content, {"url": x["url"]})]
+        if still:
+            base["repoint_warnings"] = [f"the draft still links to \"{t}\", which is being archived" for t in still]
     if not assessment.needs_edit:
         return {**base, "outcome": "no_edit"}
     if not assessment.updated_html_content:
@@ -442,7 +488,8 @@ def _phase2_article(rd, note, a, client, assess, targets, used):
     if targets is None:
         check = verify.verify_article(a["article_id"], note, assessment.original_html_content,
                                       client=_LocalHTML(assessment.updated_html_content))
-        return {**base, **files, "outcome": "draft_saved", "warnings": check.warnings}
+        return {**base, **files, "outcome": "draft_saved",
+                "warnings": check.warnings + base.pop("repoint_warnings", [])}
 
     free = [t["id"] for t in targets.describe() if t["id"] not in used]
     if not free:
@@ -454,7 +501,60 @@ def _phase2_article(rd, note, a, client, assess, targets, used):
     except Exception as exc:
         return {**base, **files, "outcome": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
     return {**base, **files, "outcome": "draft_written", "target_id": free[0], "target_link": link,
-            "warnings": check.warnings}
+            "warnings": check.warnings + base.pop("repoint_warnings", [])}
+
+
+def _archive_section(rows):
+    """The archive recommendations, for the phase 2 comment ONLY (writer
+    decision 2026-11-11): redirect target, who links to it, dependents,
+    unresolved links. Nothing here has been done in Document360."""
+    archived = [r for r in rows if r["outcome"] == "archive_recommended"]
+    if not archived:
+        return []
+    repointed = {}
+    for r in rows:
+        for t in r.get("repoints") or []:
+            repointed.setdefault(t, []).append(r)
+    lines = ["**Archive recommendations.** Nothing has been archived and no redirect has been set up: "
+             "do these in Document360 if you agree.", ""]
+    for r in archived:
+        rec = r["archive"]
+        if rec.get("redirect"):
+            head = (f"- **#{r['n']} {r['title']}**: archive it and redirect its URL to "
+                    f"**{rec['redirect']['title']}**")
+            if rec.get("runner_up"):
+                head += f" (runner-up: {rec['runner_up']['title']})"
+            head += f". {rec.get('reason') or ''}".rstrip()
+        else:
+            head = (f"- **#{r['n']} {r['title']}**: archive it. I found no article that would help a reader "
+                    f"landing on its URL, so no redirect is suggested. {rec.get('reason') or ''}".rstrip())
+        lines.append(head)
+        drafted = repointed.get(r["title"], [])
+        if drafted:
+            lines.append("  - Approved articles that link to or mention it: "
+                         + "; ".join(f"#{x['n']} {x['title']}" for x in drafted) + ". Their drafts were asked to "
+                         + ("point to the redirect target instead" if rec.get("redirect") else "remove the reference")
+                         + "; any that still link to it are marked ⚠ above.")
+        drafted_ids = {x["article_id"] for x in drafted} | {x["article_id"] for x in rows}
+        others = [m for m in rec.get("mentioned_by") or [] if m["article_id"] not in drafted_ids]
+        by_hand = [m for m in others if not m.get("release_note")]
+        notes_ = [m for m in others if m.get("release_note")]
+        if by_hand:
+            lines.append("  - Not in this ticket but mention it (update by hand): "
+                         + "; ".join(m["title"] for m in by_hand) + ".")
+        if notes_:
+            lines.append("  - Release notes that mention it, left as they are: "
+                         + "; ".join(m["title"] for m in notes_) + ".")
+        if rec.get("dependents"):
+            lines.append("  - Consider archiving these too, since they only make sense alongside it: "
+                         + "; ".join(f"{d['title']} ({d['reason']})" for d in rec["dependents"]) + ".")
+        if rec.get("unresolved_links"):
+            lines.append("  - It links to these, but they don't lead to any published article. If they're "
+                         "unpublished articles about the same feature, they likely go too: "
+                         + "; ".join(f"\"{u['text'] or u['href']}\" (`{u['href']}`)" for u in rec["unresolved_links"])
+                         + ".")
+    lines.append("")
+    return lines
 
 
 def phase2_comment(tk, results, approved):
@@ -476,12 +576,18 @@ def phase2_comment(tk, results, approved):
         elif r.get("after"):
             result += f": `{r['after']}`"
         notes = r.get("error") or r.get("note") or r.get("rationale") or ""
+        if r["outcome"] == "archive_recommended":
+            notes = "Not edited: see **Archive recommendations** below."
+        elif r.get("repoints"):
+            notes = (notes.rstrip(". ") + ". " if notes else "") + "References to " + ", ".join(
+                f"\"{t}\"" for t in r["repoints"]) + " (being archived) were included in the edit."
         if r.get("warnings"):
             notes += " ⚠ " + "; ".join(r["warnings"])
         conf = f" ({r['confidence']} confidence)" if r.get("confidence") else ""
         lines.append(f"| {r['n']} | {_cell(r['title'])} | {_cell(r.get('workspace'))} | {_cell(result)}{conf} | "
                      f"{_cell(notes)} |")
     lines.append("")
+    lines += _archive_section(rows)
     if counts["draft_written"] or counts["draft_saved"]:
         lines.append("**Next step:** review each draft against its live article before anything is published. "
                      "Nothing was published, and no live article was changed.")
@@ -535,9 +641,11 @@ def run_phase2(run, provider=claude_call.DEFAULT_PROVIDER, archived_links=None, 
         except ArchivedWriteRefused as exc:
             raise StepRefused(str(exc))
         free = [t for t in described if t["id"] not in results["targets_used"]]
-        if len(free) < len(todo):
-            raise StepRefused(f"{len(todo)} article(s) still to do but only {len(free)} unused Archived target(s) "
-                              "listed. Add more links (one per approved article) before running phase 2.")
+        to_draft = [a for a in todo if a.get("action") != "archive"]  # archive articles get no draft
+        if len(free) < len(to_draft):
+            raise StepRefused(f"{len(to_draft)} article(s) still to draft but only {len(free)} unused Archived "
+                              "target(s) listed. Add more links (one per approved article to edit) before "
+                              "running phase 2.")
         if not confirm_overwrite:
             names = "\n".join(f"  - {t['title']!r}  ({t['link']})" for t in free)
             raise StepRefused("These Archived articles would be OVERWRITTEN, content and title, with no undo:\n"
@@ -546,9 +654,19 @@ def run_phase2(run, provider=claude_call.DEFAULT_PROVIDER, archived_links=None, 
     ticket.record_event(rd, "phase2_start", provider=provider, articles=[a["n"] for a in todo],
                         archived=bool(targets))
     used = results["targets_used"]
-    for a in todo:
+    # Archive articles first: their redirect targets are what the other
+    # articles' links get repointed to.
+    archive_ids = [a["article_id"] for a in approved["articles"] if a.get("action") == "archive"]
+    for a in [a for a in todo if a.get("action") == "archive"]:
+        print(f"\n  [{a['n']}] {a['title']} ({a.get('workspace')}) — to archive", flush=True)
+        r = _phase2_archive(note, a, client, archive_ids)
+        print(f"      -> {RESULT_LABELS[r['outcome']]}" + (f": {r['error']}" if r.get("error") else ""), flush=True)
+        results["articles"][a["article_id"]] = r
+        _save(rd, "results.json", results)
+    archives = _archives_of(results, approved)
+    for a in [a for a in todo if a.get("action") != "archive"]:
         print(f"\n  [{a['n']}] {a['title']} ({a.get('workspace')})", flush=True)
-        r = _phase2_article(rd, note, a, client, assess, targets, used)
+        r = _phase2_article(rd, note, a, client, assess, targets, used, archives)
         print(f"      -> {RESULT_LABELS[r['outcome']]}" + (f": {r['error']}" if r.get("error") else ""), flush=True)
         results["articles"][a["article_id"]] = r
         results["targets_used"] = used

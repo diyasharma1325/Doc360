@@ -46,6 +46,7 @@ built.
 | `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`ticket_intake_prompt.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
 | `ticket_run.py` | 1-4 | The ticket's steps: `intake`, `phase1` (discovery -> numbered candidate plan comment, In Draft -> Peer review), `replan` (writer feedback -> revised plan), `approve` (plan numbers -> `approved.json`, Peer review -> For review), `phase2` (assess approved articles, save or write drafts, final comment), `show` |
 | `build_artifact.py`, `artifact_template.html` | 5 | The Jira-style artifact page for a run, as the I2P backtest builds one: ticket header, details sidebar, activity timeline (status moves, comments reproduced exactly, the extracted change note, the approval), proposed edits as word-level before/after diffs, and a footnote on how the run differs from production. Writes `runs/<name>/artifact.html`; publish it with the Artifact tool |
+| `archive_plan.py`, `archive_prompt.md` | 4 | Phase 2 for articles to archive: redirect target, runner-up, dependents, inbound links and unresolved links, for the "drafts ready" comment; no edit, no Document360 write |
 | `archived_writer.py` | 4 | The only way a ticket run writes to Document360: into the writer's listed Archived scratch articles, never a live one. Refuses unlisted ids and anything not in the Archived workspace, names every target before an overwrite, direct update (never a fork or publish) |
 | `pdf_text.py` | 1 | Ticket PDF attachments -> text (pdfplumber, tables as Markdown), with the I2P agent's 10 MB / 300-page limits |
 | `change_note.py` | 1 | Defines and validates the change-note shape, including the `product_lines` list |
@@ -194,6 +195,25 @@ saved in `out/articles/` (`NN-<slug>.before.html` / `.after.html`), then:
   read first and refused unless it is in the Archived workspace; without
   `--confirm-overwrite` the run names each target's current title and
   stops, since an overwrite has no undo.
+
+**Articles to archive** (plan action "archive", from agent discovery) are
+handled first and are never edited (`archive_plan.py`, 2026-11-11):
+
+- Candidates without a model call: the article's category siblings, the
+  articles its live HTML links to, and the articles that mention its
+  title in the plain-text copy. Then ONE model call (`archive_prompt.md`)
+  picks the **redirect target** (the article covering what replaces the
+  feature, else the category overview, else none), a runner-up and any
+  **dependent** articles that only make sense alongside it.
+- Approved articles that link to it (checked in their live HTML) or name
+  it are assessed with an extra instruction to point that reference to
+  the redirect target, or remove it if there's none. A draft that still
+  links to the archived URL gets a ⚠ warning.
+- Links from it that resolve to no published article (by slug against the
+  index) are listed: often unpublished FAQs about the same feature.
+- All of this goes in the "drafts ready" comment ONLY (writer decision).
+  Nothing is archived and no redirect is set up: the writer does both in
+  Document360. Archive articles need no Archived scratch target.
 
 Results are saved after every article (`results.json`), so re-running
 phase 2 retries only the failed ones and puts them in the next unused
@@ -612,8 +632,8 @@ so it can open articles and follow leads.
 Measured 2026-11-10 (two confirmed keys, DAP for Web): agent 19 of 20
 affected articles found, plans of 7 and 19; index 17 of 20, plans of 18
 and 34. Agent ~$0.50 and ~1 minute per single-workspace ticket; index
-~$0.10 and ~25 seconds. Known gaps: phase 2 doesn't act on "archive" yet;
-headings aren't marked in the copy (the index stores flattened text).
+~$0.10 and ~25 seconds. Phase 2 handles "archive" articles with a recommendation, not an edit
+(see "Phase 2" above). Known gap: headings aren't marked in the copy (the index stores flattened text).
 
 The index is built all-or-nothing: a build writes a fresh database and
 swaps it in only once every article read has succeeded, so a failed

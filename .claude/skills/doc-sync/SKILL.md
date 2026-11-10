@@ -137,8 +137,14 @@ show the message and ask again.
 $P doc_sync/ticket_run.py phase2 <name>
 ```
 
+Approved articles marked **archive** in the plan are not edited. Phase 2 recommends
+instead: a redirect target for the article's URL, which articles link to it (approved
+ones get their link repointed in their draft), articles that may need archiving too,
+and links from it that lead nowhere. This goes in the "drafts ready" comment only.
+Nothing is archived and no redirect is set up; the writer does both in Document360.
+
 **Into Archived scratch articles**, only if the writer asks for it and gives one
-Archived portal link per approved article
+Archived portal link per approved article to edit (articles to archive need none)
 (`https://portal.document360.io/<project>/document/archived/view/<id>`):
 
 ```bash

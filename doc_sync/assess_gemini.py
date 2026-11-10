@@ -44,12 +44,12 @@ ASSESS_FUNCTION = types.FunctionDeclaration(
 )
 
 
-def assess_article(article_id, change_note, client=None):
+def assess_article(article_id, change_note, client=None, extra=None):
     client = client or Document360Client()
     article = client.get_article(article_id)["data"]
     html_content = article.get("html_content", "")
 
-    parts = [_build_change_note_text(change_note, html_content)]
+    parts = [_build_change_note_text(change_note, html_content, extra)]
 
     gclient = genai.Client()  # reads GEMINI_API_KEY from the environment
     config = types.GenerateContentConfig(

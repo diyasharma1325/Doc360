@@ -108,7 +108,7 @@ def _extract_image_srcs(html_content):
     return seen[:MAX_IMAGES]
 
 
-def _build_change_note_text(change_note, html_content):
+def _build_change_note_text(change_note, html_content, extra=None):
     """Shared by assess.py and assess_gemini.py so both providers see the
     exact same input. Renders the per-type `changes` list (when a change
     note has one) as its own clearly-labeled section instead of cramming
@@ -137,16 +137,21 @@ def _build_change_note_text(change_note, html_content):
             "needing this edit just because it covers one of these): "
             + ", ".join(change_note.unaffected_content_types)
         )
+    if extra:
+        # An instruction from phase 2, e.g. repoint links to an article being
+        # archived (archive_plan.repoint_instruction).
+        lines.append("\n" + extra)
     lines.append(f"\nArticle html_content:\n{html_content}")
     return "\n".join(lines)
 
 
-def assess_article(article_id, change_note, client=None):
+def assess_article(article_id, change_note, client=None, extra=None):
+    """`extra`: an additional instruction for this article (phase 2)."""
     client = client or Document360Client()
     article = client.get_article(article_id)["data"]
     html_content = article.get("html_content", "")
 
-    text = _build_change_note_text(change_note, html_content)
+    text = _build_change_note_text(change_note, html_content, extra)
 
     try:
         result = claude_call.generate(
