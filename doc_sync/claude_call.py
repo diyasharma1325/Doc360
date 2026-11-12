@@ -66,6 +66,13 @@ class ClaudeCallError(RuntimeError):
         self.cost = cost
 
 
+def _output_limit_hit(exc):
+    """True when the response ran past the output token maximum. Never
+    retried: the same request produces the same too-long answer (hit
+    2026-11-11 on the Whatfix Glossary, which burned an 11-minute retry)."""
+    return "output token maximum" in str(exc)
+
+
 class BudgetExceeded(ClaudeCallError):
     """An agent call reached its --max-budget-usd cap before answering. Never
     retried: the same call would only reach it again. The cap is checked
@@ -237,7 +244,8 @@ def generate(system, user, schema, label, model=DEFAULT_MODEL, max_tokens=None, 
             _log_call({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                        "label": label, "model": model, "ok": False, "error": str(exc)[:300],
                        "cost_usd": exc.cost})
-            if attempt == MAX_ATTEMPTS or isinstance(exc, BudgetExceeded):
+            # Deterministic failures: the same request would only fail the same way.
+            if attempt == MAX_ATTEMPTS or isinstance(exc, BudgetExceeded) or _output_limit_hit(exc):
                 raise
             wait = 10 * attempt
             print(f"    (claude {label} failed: {exc} — retrying in {wait}s, attempt {attempt}/{MAX_ATTEMPTS})",

@@ -14,6 +14,11 @@ from assess import _extract_image_srcs
 from d360_client import Document360Client
 
 
+def _image_path(src):
+    """An image URL without its query string or fragment."""
+    return src.split("#", 1)[0].split("?", 1)[0]
+
+
 @dataclass
 class VerificationResult:
     ok: bool
@@ -49,7 +54,12 @@ def verify_article(article_id, change_note, before_html, client=None):
     if before_html and len(after_html) < len(before_html) * 0.5:
         warnings.append(f"Content shrank by more than half ({len(before_html)} -> {len(after_html)} chars)")
 
-    missing_images = set(_extract_image_srcs(before_html)) - set(_extract_image_srcs(after_html))
+    # Compared without the query string: Document360 serves image URLs with a
+    # time-limited SAS signature (?sv=...&se=...&sig=...) that changes on every
+    # read, so a before/after read minutes apart flagged EVERY image as missing
+    # (2026-11-11, WSC-900010; all images were present on read-back).
+    missing_images = set(map(_image_path, _extract_image_srcs(before_html))) \
+        - set(map(_image_path, _extract_image_srcs(after_html)))
     if missing_images:
         warnings.append(f"{len(missing_images)} image(s) missing after the edit: {sorted(missing_images)}")
 

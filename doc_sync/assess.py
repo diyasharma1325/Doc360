@@ -26,8 +26,10 @@ MODEL = claude_call.DEFAULT_MODEL
 ROOT = THIS_DIR  # assess_prompt.md lives alongside this file
 
 # A flagged article comes back as its FULL corrected html_content, which can
-# run tens of KB — the same headroom assess_gemini.py gives it.
-MAX_OUTPUT_TOKENS = 32768
+# run tens of KB. 32768 was too small for the DAP for Web Whatfix Glossary
+# (2026-11-11); 64000 is a stopgap until assessment returns targeted edits
+# instead of the whole article.
+MAX_OUTPUT_TOKENS = 64000
 
 MAX_IMAGES = 6  # cap per article on the image-src scan verify.py uses for its missing-image check
 IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\'>]+)["\']', re.IGNORECASE)

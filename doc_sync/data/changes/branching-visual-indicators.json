@@ -1,11 +1,11 @@
 {
   "feature_area": "branching-visual-indicators",
-  "summary": "Whatfix Studio and Dashboard now display visual indicator pills for Optional and Automated steps and branches across Flow view, Branch map, List view, and Grid view. Normal steps remain visually unchanged without a pill.",
+  "summary": "Whatfix Studio and Dashboard now display visual status pills ('Optional' or 'Automated') below step preview text and branch titles. This allows authors to identify skippable or automated steps across Flow, Branch map, List, and Grid views without opening individual steps.",
   "old": "Authors had to open each step individually to check whether a step or branch was optional or automated.",
-  "new": "Flow steps and branches display visual pills reading 'Optional' or 'Automated' under preview text across all Whatfix Studio and Dashboard views.",
-  "effective_date": "2026-11-03",
-  "notes": "Normal steps remain visually unchanged (no pill). Visual indicators apply to both individual steps and branches as a whole, using full text without icons or abbreviations.",
-  "product_line": "DAP for Web",
+  "new": "Visual pills reading 'Optional' or 'Automated' appear below step preview text and branch titles across Whatfix Studio and Dashboard views.",
+  "effective_date": "",
+  "notes": "Applies to six views across Whatfix Studio (Flow view, Branch map, List view) and Dashboard (Grid view, List view, Branch map view). Normal steps remain visually unchanged without pills.",
+  "product_line": "DAP for Desktop",
   "affected_content_types": [
     "Flows"
   ],
