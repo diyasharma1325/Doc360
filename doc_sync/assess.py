@@ -23,7 +23,7 @@ import product_context
 from d360_client import Document360Client
 
 MODEL = claude_call.DEFAULT_MODEL
-ROOT = THIS_DIR  # assess_prompt.md lives alongside this file
+PROMPTS_DIR = THIS_DIR / "prompts"
 
 # A flagged article comes back as its FULL corrected html_content, which can
 # run tens of KB. 32768 was too small for the DAP for Web Whatfix Glossary
@@ -81,7 +81,7 @@ def _assessment_from_result(result, original_html_content):
 
 
 def _load_system_prompt(product_line=None):
-    parts = [(ROOT / "assess_prompt.md").read_text()]
+    parts = [(PROMPTS_DIR / "assess.md").read_text()]
     for guideline in ("document360-formatting.md", "whatfix-writing-guidelines-agent.md"):
         path = REPO_ROOT / "guidelines" / guideline  # these live in ../guidelines, not here
         if path.exists():

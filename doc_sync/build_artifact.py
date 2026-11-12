@@ -6,7 +6,7 @@ does for its runs (i2p-backtest/scripts/build_artifact.py).
 Reads everything the run recorded (ticket.json, out/jira_log.json, the
 comments, change_note.json, plan.json, approved.json, results.json and the
 before/after HTML) and writes runs/<run>/artifact.html from
-artifact_template.html: the ticket header, a details sidebar, the activity
+templates/artifact.html: the ticket header, a details sidebar, the activity
 timeline (every status move, comment, the extracted change note and the
 approval, in order), the proposed edits as word-level diffs, and a footnote
 on how the run differs from production. Comments are reproduced exactly as
@@ -27,7 +27,7 @@ from bs4 import BeautifulSoup
 import ticket
 
 THIS_DIR = Path(__file__).resolve().parent
-TEMPLATE = THIS_DIR / "artifact_template.html"
+TEMPLATE = THIS_DIR / "templates" / "artifact.html"
 AGENT = "Doc Sync Agent"
 AGENT_INITIALS = "DS"
 

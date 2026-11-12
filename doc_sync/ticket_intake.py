@@ -51,8 +51,8 @@ import ticket
 import workspaces
 from change_note import ChangeNote, ContentChange, save_change_note
 
-PROMPT_PATH = THIS_DIR / "ticket_intake_prompt.md"
-OLD_TERMS_PROMPT_PATH = THIS_DIR / "old_terms_prompt.md"
+PROMPT_PATH = THIS_DIR / "prompts" / "ticket_intake.md"
+OLD_TERMS_PROMPT_PATH = THIS_DIR / "prompts" / "old_terms.md"
 # The suggestion call carries the product reference for the ticket's lines
 # up to this size (all four DAP surfaces: ~105 KB; all six: ~180 KB).
 OLD_TERMS_CONTEXT_MAX_BYTES = 120_000

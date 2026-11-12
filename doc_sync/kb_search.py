@@ -60,7 +60,7 @@ GEMINI_MODEL = "gemini-3.5-flash"
 # Same output ceiling for both providers. Gemini's thinking tokens share it,
 # which is what once produced a MAX_TOKENS failure here (see triage()).
 TRIAGE_MAX_OUTPUT_TOKENS = 16384
-PROMPT_PATH = os.path.join(os.path.dirname(__file__), "kb_search_prompt.md")
+PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "kb_search.md")
 
 DISCOVERY_MODES = ("titles", "index", "both", "agent")
 DEFAULT_DISCOVERY = "titles"  # pipeline.py / this CLI; ticket runs default to "index" (ticket_run.py)
@@ -131,7 +131,7 @@ SWEEP_MAX = 120
 # make the shortlist several times longer than one call should carry.
 TRIAGE_BATCH = 40
 
-# Prepended to the triage request in "index" mode only. kb_search_prompt.md
+# Prepended to the triage request in "index" mode only. prompts/kb_search.md
 # describes a full title list, which a shortlist isn't — saying so here,
 # rather than editing that file, keeps "titles" mode's prompt unchanged.
 _SHORTLIST_NOTE = (
@@ -195,7 +195,7 @@ CANDIDATES_SCHEMA = {
 
 
 def _load_prompt(product_lines=None, include_products=True):
-    """kb_search_prompt.md plus, when `include_products`, the reference
+    """prompts/kb_search.md plus, when `include_products`, the reference
     files for `product_lines` (a list; None or [] means DAP for Web's)."""
     with open(PROMPT_PATH) as f:
         parts = [f.read()]

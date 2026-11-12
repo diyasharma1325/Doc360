@@ -40,13 +40,15 @@ built.
 
 ## Files
 
+Python modules sit directly in `doc_sync/`, so every command is `python doc_sync/<module>.py`. Everything else is grouped: model instructions in `prompts/`, product reference files in `product_reference/`, the artifact page in `templates/`, local state in `data/`, ticket runs in `runs/` and the recall benchmark in `eval/`.
+
 | File | Stage | Role |
 |---|---|---|
 | `ticket.py` | 1 | The simulated Jira ticket a run starts from (summary, free-text description, PDF attachments, assignee) in its own `runs/<name>/` folder, and the local recorder for its status moves and comments (`out/jira_log.json`, `out/comment-NN.txt`). Nothing touches a real Jira |
-| `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`ticket_intake_prompt.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
+| `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`prompts/ticket_intake.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
 | `ticket_run.py` | 1-4 | The ticket's steps: `intake`, `phase1` (discovery -> numbered candidate plan comment, In Draft -> Peer review), `replan` (writer feedback -> revised plan), `approve` (plan numbers -> `approved.json`, Peer review -> For review), `phase2` (assess approved articles, save or write drafts, final comment), `show` |
-| `build_artifact.py`, `artifact_template.html` | 5 | The Jira-style artifact page for a run, as the I2P backtest builds one: ticket header, details sidebar, activity timeline (status moves, comments reproduced exactly, the extracted change note, the approval), proposed edits as word-level before/after diffs, and a footnote on how the run differs from production. Writes `runs/<name>/artifact.html`; publish it with the Artifact tool |
-| `archive_plan.py`, `archive_prompt.md` | 4 | Phase 2 for articles to archive: redirect target, runner-up, dependents, inbound links and unresolved links, for the "drafts ready" comment; no edit, no Document360 write |
+| `build_artifact.py`, `templates/artifact.html` | 5 | The Jira-style artifact page for a run, as the I2P backtest builds one: ticket header, details sidebar, activity timeline (status moves, comments reproduced exactly, the extracted change note, the approval), proposed edits as word-level before/after diffs, and a footnote on how the run differs from production. Writes `runs/<name>/artifact.html`; publish it with the Artifact tool |
+| `archive_plan.py`, `prompts/archive.md` | 4 | Phase 2 for articles to archive: redirect target, runner-up, dependents, inbound links and unresolved links, for the "drafts ready" comment; no edit, no Document360 write |
 | `archived_writer.py` | 4 | The only way a ticket run writes to Document360: into the writer's listed Archived scratch articles, never a live one. Refuses unlisted ids and anything not in the Archived workspace, names every target before an overwrite, direct update (never a fork or publish) |
 | `pdf_text.py` | 1 | Ticket PDF attachments -> text (pdfplumber, tables as Markdown), with the I2P agent's 10 MB / 300-page limits |
 | `change_note.py` | 1 | Defines and validates the change-note shape, including the `product_lines` list |
@@ -54,16 +56,16 @@ built.
 | `candidates.py` | 2 | Looks up candidates from the tag map (fuzzy-match fallback on `feature_area` typos); returns `[]`, not an error, when there's no confident match, so `pipeline.py` can fall back to a live search |
 | `kb_search.py` | 2 | Live search, scoped to the change note's product lines (see "Discovery scope" below), two modes. **titles** (default): walks each workspace in scope and semantically triages every title against the change note (one model call per workspace). **index** (opt-in): searches article bodies in scope with `kb_index.py`, then triages only that shortlist. `pipeline.py` runs this automatically whenever `candidates.py` finds no tag_map entry — see "Live KB search" and "Index discovery" below |
 | `kb_index.py` | 2 (state) | Local full-text index of every published article body in the six live workspaces (`data/knowledge.db`, git-ignored). `build` (~30-40 min, read-only), `status`, `search`. Built all-or-nothing |
-| `old_terms_prompt.md` | 1 | Instructions for intake's second call, which suggests the old wording when the ticket gives none (see "Old wording") |
+| `prompts/old_terms.md` | 1 | Instructions for intake's second call, which suggests the old wording when the ticket gives none (see "Old wording") |
 | `kb_mirror.py` | 2 | Exports the knowledge index to a plain-text copy, one `.md` per article (`data/kb_mirror/`, git-ignored, seconds, no network), for agent discovery |
-| `discovery_agent.py`, `discovery_agent_prompt.md` | 2 | Agent discovery: read-only Claude agents over the copy, two runs per workspace within a per-ticket budget, verdicts with an edit/archive action, keyword-triage fallback (see "Agent discovery") |
+| `discovery_agent.py`, `prompts/discovery_agent.md` | 2 | Agent discovery: read-only Claude agents over the copy, two runs per workspace within a per-ticket budget, verdicts with an edit/archive action, keyword-triage fallback (see "Agent discovery") |
 | `eval_recall.py`, `eval/keys/` | — | Discovery recall benchmark: scores the shortlist (free) and the plan (`--triage`) against writer-confirmed answer keys (see "Recall benchmark") |
-| `kb_search_prompt.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
+| `prompts/kb_search.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
 | `assess.py` | 3 | **Claude path — default**, through `claude_call.py`; no API key needed |
 | `assess_gemini.py` | 3 | Gemini path — fallback (`--provider gemini`), needs `GEMINI_API_KEY` |
-| `assess_prompt.md` | 3 | Fixed task instructions, concatenated at runtime with `guidelines/document360-formatting.md`, `guidelines/whatfix-writing-guidelines-agent.md` and the article's product reference files; shared by both assess modules |
+| `prompts/assess.md` | 3 | Fixed task instructions, concatenated at runtime with `guidelines/document360-formatting.md`, `guidelines/whatfix-writing-guidelines-agent.md` and the article's product reference files; shared by both assess modules |
 | `product_context.py` | 2-3 | Picks which product reference files a prompt carries, by product line — the article's own workspace first, then the change note's `product_line`, then DAP for Web |
-| `dap-core.md`, `dap-web.md`, `dap-desktop.md`, `dap-os.md`, `dap-mobile.md`, `product-analytics.md`, `mirror.md` | 2-3 (reference) | Product reference files: concepts, terminology, and a fixed snapshot of each workspace's category structure. The four `dap-*` surface files are deltas on `dap-core.md` and always load with it |
+| `product_reference/`: `dap-core.md`, `dap-web.md`, `dap-desktop.md`, `dap-os.md`, `dap-mobile.md`, `product-analytics.md`, `mirror.md` | 2-3 (reference) | Product reference files: concepts, terminology, and a fixed snapshot of each workspace's category structure. The four `dap-*` surface files are deltas on `dap-core.md` and always load with it |
 | `draft_writer.py` | 4 | Only file that writes to Document360. Checks for an existing draft FIRST, then forks the article into a new draft version and writes into that; never publishes |
 | `verify.py` | 4 | Cheap post-write checks, shown to the reviewer before they decide: old wording that was in the article word for word is gone, HTML intact, no big shrink, no images lost. (No "new text present" check since 2026-11-06: a change note's `new` is a summary sentence, so it fired on nearly every draft) |
 | `review_queue.py` | 5 | JSON-backed pending/approved/rejected/merge_conflict queue |
@@ -201,7 +203,7 @@ handled first and are never edited (`archive_plan.py`, 2026-11-11):
 
 - Candidates without a model call: the article's category siblings, the
   articles its live HTML links to, and the articles that mention its
-  title in the plain-text copy. Then ONE model call (`archive_prompt.md`)
+  title in the plain-text copy. Then ONE model call (`prompts/archive.md`)
   picks the **redirect target** (the article covering what replaces the
   feature, else the category overview, else none), a runner-up and any
   **dependent** articles that only make sense alongside it.

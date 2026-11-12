@@ -67,7 +67,7 @@ import product_context
 from change_note import load_change_note
 
 THIS_DIR = Path(__file__).resolve().parent
-PROMPT_PATH = THIS_DIR / "discovery_agent_prompt.md"
+PROMPT_PATH = THIS_DIR / "prompts" / "discovery_agent.md"
 
 AGENT_MODEL = claude_call.DEFAULT_MODEL
 AGENT_MAX_OUTPUT_TOKENS = 32000

@@ -23,3 +23,9 @@ doc_sync/runs/
 doc_sync/eval/results/
 doc_sync/data/kb_mirror/
 doc_sync/data/kb_mirror.building/
+
+# macOS Finder metadata
+.DS_Store
+
+# PRDs and product notes used as run inputs - kept local
+inputs/prds/

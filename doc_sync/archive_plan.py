@@ -19,7 +19,7 @@ How the target is chosen: candidates are gathered without a model call
 (the article's category siblings in the plain-text copy, the articles its
 live HTML links to, and the articles that mention its title), then ONE
 `claude -p` call, no tools, picks the target, the runner-up and the
-dependents (archive_prompt.md). Ids it returns outside the candidate list
+dependents (prompts/archive.md). Ids it returns outside the candidate list
 are dropped.
 
 Read-only: the live article (Document360, read), the local index and the
@@ -35,7 +35,7 @@ import kb_mirror
 import kb_search
 
 THIS_DIR = Path(__file__).resolve().parent
-PROMPT_PATH = THIS_DIR / "archive_prompt.md"
+PROMPT_PATH = THIS_DIR / "prompts" / "archive.md"
 MODEL = claude_call.DEFAULT_MODEL
 
 ARCHIVED_TEXT_MAX = 6000   # chars of the archived article shown to the model

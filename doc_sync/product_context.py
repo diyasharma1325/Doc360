@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))  # work
 
 import workspaces
 
-THIS_DIR = Path(__file__).resolve().parent  # the reference files live alongside this module
+THIS_DIR = Path(__file__).resolve().parent / "product_reference"  # the reference files
 
 DEFAULT_PRODUCT_LINE = "DAP for Web"
 
