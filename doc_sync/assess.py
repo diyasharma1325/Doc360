@@ -1,11 +1,9 @@
-"""Stage 3 (agent), Claude path — the DEFAULT provider: reads one
+"""Stage 3 (agent): reads one
 article's real content against a change note and decides whether it needs
 an edit, and if so, what the edit is.
 
 Calls Claude through `claude -p` on the writer's Claude Code login
-(claude_call.py), so no ANTHROPIC_API_KEY is needed. assess_gemini.py is the
-fallback (`--provider gemini`); it reuses this module's prompt and input
-builders, so the two providers are never shown different inputs.
+(claude_call.py), so no ANTHROPIC_API_KEY is needed.
 """
 import html
 import re
@@ -51,8 +49,7 @@ ASSESS_SCHEMA = {
 
 class AssessmentError(RuntimeError):
     """Raised when a model's response can't be turned into an Assessment —
-    e.g. no tool call came back, or a required field is missing. Shared by
-    assess.py and assess_gemini.py so both providers fail the same way."""
+    e.g. no structured output came back, or a required field is missing."""
 
 
 @dataclass
@@ -111,8 +108,7 @@ def _extract_image_srcs(html_content):
 
 
 def _build_change_note_text(change_note, html_content, extra=None):
-    """Shared by assess.py and assess_gemini.py so both providers see the
-    exact same input. Renders the per-type `changes` list (when a change
+    """Renders the per-type `changes` list (when a change
     note has one) as its own clearly-labeled section instead of cramming
     several content types into one old/new sentence — and lists
     `unaffected_content_types` explicitly so the model doesn't need to

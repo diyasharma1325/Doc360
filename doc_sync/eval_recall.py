@@ -73,7 +73,7 @@ def shortlist_of(note, scope):
     return kb_search.index_shortlist(note, scope)
 
 
-def score(key, triage=False, provider="claude", discovery="index"):
+def score(key, triage=False, discovery="index"):
     note = key["_note"]
     scope = kb_search.resolve_scope(note, None, "index")
     expected = {e["article_id"]: e["title"] for e in key["expected"]}
@@ -99,7 +99,7 @@ def score(key, triage=False, provider="claude", discovery="index"):
                                    for r in discovery_agent.find_candidates_agent.last_not_affected]
             out["searches"] = discovery_agent.find_candidates_agent.last_searches
         else:
-            _, found, _ = kb_search.find_candidates_indexed(note, scope=scope, provider=provider)
+            _, found, _ = kb_search.find_candidates_indexed(note, scope=scope)
         ignored = {e["article_id"] for e in key.get("ignore") or []}
         picked = {c["article_id"]: c["title"] for c in found if c["article_id"] not in ignored}
         # Archive check (agent mode carries an action): expected archive
@@ -160,7 +160,6 @@ def main():
     parser = argparse.ArgumentParser(description="Score discovery recall against answer keys.")
     parser.add_argument("keys", nargs="*", help="Key names (default: every key in doc_sync/eval/keys/)")
     parser.add_argument("--triage", action="store_true", help="Also run triage and score the plan (model calls)")
-    parser.add_argument("--provider", default="claude", choices=("claude", "gemini"))
     parser.add_argument("--discovery", default="index", choices=("index", "agent"),
                         help="Which mode's plan --triage scores (agent: Claude agents over kb_mirror)")
     args = parser.parse_args()
@@ -176,7 +175,7 @@ def main():
         raise SystemExit(f"No answer keys in {KEYS_DIR}")
     results = []
     for path in paths:
-        r = score(load_key(path), triage=args.triage, provider=args.provider, discovery=args.discovery)
+        r = score(load_key(path), triage=args.triage, discovery=args.discovery)
         report(r)
         results.append(r)
 

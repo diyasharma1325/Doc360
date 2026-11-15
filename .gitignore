@@ -10,7 +10,7 @@ __pycache__/
 doc_sync/data/knowledge.db
 doc_sync/data/knowledge.db.building
 
-# Local model response cache (gemini_call.py / claude_call.py, DOC_SYNC_LLM_CACHE=1)
+# Local model response cache (claude_call.py, DOC_SYNC_LLM_CACHE=1)
 doc_sync/data/llm_cache/
 
 # Per-call log of claude -p usage (doc_sync/claude_call.py)

@@ -1,5 +1,5 @@
 """Stage 1 (Intake): the structured note that drives both discovery
-(candidates.py/kb_search.py) and assessment (assess.py/assess_gemini.py).
+(candidates.py/kb_search.py) and assessment (assess.py).
 Everything downstream reads off this shape.
 
 `old`/`new`/`summary` remain the required, always-present fields — a
@@ -64,6 +64,12 @@ class ChangeNote:
     notes: str = ""       # anything else worth telling the agent
     product_line: str = ""  # real Document360 workspace name, e.g. "DAP for Web"
     product_lines: List[str] = field(default_factory=list)  # every live workspace the change ships in
+    # Where product_lines came from (ticket_intake.py): "ticket" (the field
+    # the ticket creator set), "named" (the summary or description named
+    # them), "predicted" (the model's prediction, writer to confirm or
+    # override) or "writer" (an override at phase 1). Empty on older notes.
+    product_lines_source: str = ""
+    product_lines_basis: str = ""  # the quote they were named in, or why they were predicted
     affected_content_types: List[str] = field(default_factory=list)
     unaffected_content_types: List[str] = field(default_factory=list)
     changes: List[ContentChange] = field(default_factory=list)
@@ -102,6 +108,8 @@ def load_change_note(path):
         notes=data.get("notes", ""),
         product_line=product_line,
         product_lines=product_lines,
+        product_lines_source=data.get("product_lines_source", ""),
+        product_lines_basis=data.get("product_lines_basis", ""),
         affected_content_types=list(data.get("affected_content_types") or []),
         unaffected_content_types=list(data.get("unaffected_content_types") or []),
         changes=[ContentChange(**c) for c in data.get("changes") or []],
@@ -129,6 +137,8 @@ def scaffold(path):
         "notes": "",
         "product_line": "",
         "product_lines": [],
+        "product_lines_source": "",
+        "product_lines_basis": "",
         "affected_content_types": [],
         "unaffected_content_types": [],
         "changes": [],

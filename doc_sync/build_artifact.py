@@ -169,10 +169,22 @@ STEP_NOTES = {
 }
 
 
+def _product_lines_source_row(ev):
+    """Where intake's product lines came from. Older runs logged only a
+    `product_lines_quote` (the words that named them)."""
+    source = ev.get("product_lines_source")
+    basis = ev.get("product_lines_basis") or ev.get("product_lines_quote") or ""
+    if source == "ticket":
+        return ("Source", "Set on the ticket")
+    if source == "predicted":
+        return ("Source", "Predicted, for the writer to confirm" + (f": {esc(basis)}" if basis else ""))
+    return ("Named as", f"“{esc(basis)}”" if basis else "—")
+
+
 def _intake_card(ev, note):
     rows = [("Feature", esc(note.get("feature_area", ""))),
             ("Product lines", " · ".join(esc(p) for p in ev.get("product_lines") or [])),
-            ("Named as", f"“{esc(ev.get('product_lines_quote') or '')}”" if ev.get("product_lines_quote") else "—"),
+            _product_lines_source_row(ev),
             ("Before", esc(note.get("old", ""))),
             ("After", esc(note.get("new", "")))]
     if note.get("affected_content_types"):
@@ -311,10 +323,7 @@ def build_footnote(results, plan):
     elif arts:
         notes.append("Nothing was written to Document360. Live articles were only read; the proposed edits are "
                      "saved as HTML in the run folder.")
-    if plan and plan.get("provider") == "gemini":
-        notes.append("Model calls used the Gemini fallback.")
-    else:
-        notes.append("Model calls ran through Claude Code (claude -p) on the writer's login, not an API key.")
+    notes.append("Model calls ran through Claude Code (claude -p) on the writer's login, not an API key.")
     return "\n".join(f"    <p>{esc(n)}</p>" for n in notes)
 
 

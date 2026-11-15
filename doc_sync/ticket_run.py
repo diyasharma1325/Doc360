@@ -2,7 +2,7 @@
 "IA Plan -> Peer review -> approval" loop, for doc-sync's job of finding
 the existing articles a change has made wrong.
 
-    python3 doc_sync/ticket_run.py intake  <run> [--provider gemini]        # To Do -> In Draft
+    python3 doc_sync/ticket_run.py intake  <run>                            # To Do -> In Draft
     python3 doc_sync/ticket_run.py phase1  <run> [--discovery both]         # In Draft -> Peer review + plan
     python3 doc_sync/ticket_run.py replan  <run> "<feedback>" [--product-lines ...] [--old-terms "..."]
     python3 doc_sync/ticket_run.py approve <run> "1, 3, 5-7" | all          # Peer review -> For review
@@ -110,6 +110,9 @@ def plan_comment(tk, note, plan, revised=False):
         terms += [f"**{t}** (suggested)" for t in note.old_terms_suggested
                   if t.lower() not in [o.lower() for o in note.old_terms]]
         lines += [f"**Old wording searched for:** {', '.join(terms)}", ""]
+    if note.product_lines_source == "predicted" and not plan.get("scope_override"):
+        lines += [f"**Product lines searched:** {scope}, as **predicted** from the ticket. If that's "
+                  "wrong, reply with the right ones and I'll re-plan.", ""]
     if not cands:
         lines += [
             f"I found **no articles** that look affected ({how}).",
@@ -179,23 +182,20 @@ def plan_comment(tk, note, plan, revised=False):
     return "\n".join(lines)
 
 
-def _mode(discovery, provider):
+def _mode(discovery):
     """The discovery mode that will actually run (find_candidates_live's
-    own fallbacks): no index -> "titles"; "agent" with a non-Claude
-    provider -> "index"."""
+    own fallback): no index -> "titles"."""
     if discovery != "titles" and not kb_search.index_available():
         return "titles"
-    if discovery == "agent" and provider != "claude":
-        return "index"
     return discovery
 
 
-def _discover(run, note, discovery, provider, scope_override, revision=None, agent_budget=None):
+def _discover(run, note, discovery, scope_override, revision=None, agent_budget=None):
     """Run discovery and save plan.json. Returns the plan."""
-    mode = _mode(discovery, provider)
+    mode = _mode(discovery)
     scope = kb_search.resolve_scope(note, scope_override, mode)
     _, found, scanned = kb_search.find_candidates_live(
-        note, product_lines=scope_override, discovery=discovery, provider=provider, revision=revision,
+        note, product_lines=scope_override, discovery=discovery, revision=revision,
         agent_budget=agent_budget,
     )
     previous = load_plan(run)
@@ -212,7 +212,6 @@ def _discover(run, note, discovery, provider, scope_override, revision=None, age
         "version": (previous or {}).get("version", 0) + 1,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "discovery": mode,
-        "provider": provider,
         "scope": scope,
         "scope_override": scope_override,
         "scanned": len(scanned),
@@ -247,8 +246,7 @@ def _discover(run, note, discovery, provider, scope_override, revision=None, age
 TICKET_DISCOVERY = "agent"
 
 
-def run_phase1(run, discovery=TICKET_DISCOVERY, provider=claude_call.DEFAULT_PROVIDER,
-               product_lines=None, agent_budget=None):
+def run_phase1(run, discovery=TICKET_DISCOVERY, product_lines=None, agent_budget=None):
     """In Draft -> Peer review, with the candidate plan as a comment."""
     rd = ticket.run_dir(run)
     tk = ticket.load_ticket(rd)
@@ -258,11 +256,13 @@ def run_phase1(run, discovery=TICKET_DISCOVERY, provider=claude_call.DEFAULT_PRO
     if load_plan(rd):
         raise StepRefused(f"{tk['key']} already has a plan; use replan to change it.")
     note = load_change_note(str(_path(rd, "change_note.json")))
+    if product_lines:
+        note = set_product_lines(rd, product_lines)
 
-    ticket.record_event(rd, "phase1_start", discovery=discovery, provider=provider,
+    ticket.record_event(rd, "phase1_start", discovery=discovery,
                         **({"agent_budget_usd": agent_budget} if agent_budget else {}))
     try:
-        plan = _discover(rd, note, discovery, provider, product_lines, agent_budget=agent_budget)
+        plan = _discover(rd, note, discovery, product_lines, agent_budget=agent_budget)
     except Exception as exc:
         ticket.record_comment(rd, (
             "Something went wrong while I was looking for the affected articles, so there is no "
@@ -273,6 +273,22 @@ def run_phase1(run, discovery=TICKET_DISCOVERY, provider=claude_call.DEFAULT_PRO
     ticket.record_transition(rd, ticket.PEER_REVIEW, actor="agent")
     ticket.record_comment(rd, plan_comment(tk, note, plan), label="candidate plan")
     return plan
+
+
+def set_product_lines(rd, names):
+    """The writer's product lines replace intake's (named or predicted) in
+    the saved change note, so the plan and every re-plan search them.
+    Refuses any name that isn't a live workspace."""
+    try:
+        lines = ticket.check_product_lines(names)
+    except ValueError as exc:
+        raise StepRefused(str(exc))
+    note = load_change_note(str(_path(rd, "change_note.json")))
+    note.product_lines, note.product_line = lines, lines[0]
+    note.product_lines_source, note.product_lines_basis = "writer", ""
+    save_change_note(note, str(_path(rd, "change_note.json")))
+    ticket.record_event(rd, "product_lines", actor="writer", product_lines=lines)
+    return note
 
 
 def set_old_terms(rd, terms):
@@ -286,7 +302,7 @@ def set_old_terms(rd, terms):
     return note
 
 
-def run_replan(run, feedback, provider=None, product_lines=None, old_terms=None, agent_budget=None):
+def run_replan(run, feedback, product_lines=None, old_terms=None, agent_budget=None):
     """Re-plan from the writer's feedback; the ticket stays in Peer review.
     `old_terms` (a list) replaces the change note's old wording first."""
     rd = ticket.run_dir(run)
@@ -307,7 +323,7 @@ def run_replan(run, feedback, provider=None, product_lines=None, old_terms=None,
     scope_override = product_lines or plan.get("scope_override")
     revision = {"feedback": feedback, "previous": plan["candidates"]}
     try:
-        new_plan = _discover(rd, note, plan["discovery"], provider or plan["provider"], scope_override, revision,
+        new_plan = _discover(rd, note, plan["discovery"], scope_override, revision,
                              agent_budget=agent_budget)
     except Exception as exc:
         ticket.record_comment(rd, (
@@ -599,7 +615,7 @@ def phase2_comment(tk, results, approved):
     return "\n".join(lines)
 
 
-def run_phase2(run, provider=claude_call.DEFAULT_PROVIDER, archived_links=None, confirm_overwrite=False,
+def run_phase2(run, archived_links=None, confirm_overwrite=False,
                client=None, assess=None):
     """For review: assess each approved article, save or write its draft,
     record the final comment. The ticket stays in For review.
@@ -624,10 +640,7 @@ def run_phase2(run, provider=claude_call.DEFAULT_PROVIDER, archived_links=None, 
     note = load_change_note(str(_path(rd, "change_note.json")))
 
     if assess is None:
-        if provider == "gemini":
-            from assess_gemini import assess_article as assess
-        else:
-            from assess import assess_article as assess
+        from assess import assess_article as assess
     if client is None:
         from d360_client import Document360Client
         client = Document360Client()
@@ -651,7 +664,7 @@ def run_phase2(run, provider=claude_call.DEFAULT_PROVIDER, archived_links=None, 
             raise StepRefused("These Archived articles would be OVERWRITTEN, content and title, with no undo:\n"
                               f"{names}\nRun again with --confirm-overwrite once the writer has agreed.")
 
-    ticket.record_event(rd, "phase2_start", provider=provider, articles=[a["n"] for a in todo],
+    ticket.record_event(rd, "phase2_start", articles=[a["n"] for a in todo],
                         archived=bool(targets))
     used = results["targets_used"]
     # Archive articles first: their redirect targets are what the other
@@ -709,7 +722,6 @@ def main():
 
     p = sub.add_parser("intake", help="To Do -> In Draft: extract the change note (ticket_intake.py)")
     p.add_argument("run")
-    p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER)
 
     p = sub.add_parser("phase1", help="In Draft -> Peer review: find candidates, record the plan")
     p.add_argument("run")
@@ -719,14 +731,12 @@ def main():
                         "title check, merged with a Found by column. 'titles': every title only.")
     p.add_argument("--agent-budget", type=float, default=None,
                    help="Agent discovery budget for the whole ticket, USD (default $DOC_SYNC_AGENT_BUDGET or 5)")
-    p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER)
     p.add_argument("--product-lines", default=None, help="Override the ticket's product lines (comma-separated)")
 
     p = sub.add_parser("replan", help="Revise the plan from the writer's feedback")
     p.add_argument("run")
     p.add_argument("feedback", nargs="?", default="",
                    help="The writer's feedback, word for word (optional with --old-terms)")
-    p.add_argument("--provider", choices=claude_call.PROVIDERS, default=None)
     p.add_argument("--product-lines", default=None, help="Change the scope (comma-separated)")
     p.add_argument("--old-terms", default=None,
                    help="The writer's old wording (comma-separated), replacing intake's stated and "
@@ -740,7 +750,6 @@ def main():
 
     p = sub.add_parser("phase2", help="For review: assess approved articles, save or write their drafts")
     p.add_argument("run")
-    p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER)
     p.add_argument("--archived-targets", default=None,
                    help="Comma-separated Archived portal links to write the drafts into, one per approved "
                         "article. Without it, drafts are saved only in the run folder.")
@@ -782,18 +791,18 @@ def _dispatch(args):
     """Run one CLI step."""
     if args.command == "intake":
         import ticket_intake
-        outcome = ticket_intake.run_intake(args.run, provider=args.provider)
+        outcome = ticket_intake.run_intake(args.run)
         if outcome["status"] == "bounced":
             raise SystemExit("Bounced to To Do: " + " ".join(outcome["reasons"]))
-        print(f"Product lines: {', '.join(outcome['product_lines'])}")
+        ticket_intake.print_product_lines(outcome)
         ticket_intake._print_old_terms(outcome)
     elif args.command == "phase1":
-        plan = run_phase1(args.run, args.discovery, args.provider,
+        plan = run_phase1(args.run, args.discovery,
                           kb_search.parse_product_lines(args.product_lines), args.agent_budget)
         print(f"Plan v{plan['version']}: {len(plan['candidates'])} candidate(s).")
         show(args.run)
     elif args.command == "replan":
-        plan = run_replan(args.run, args.feedback, args.provider,
+        plan = run_replan(args.run, args.feedback,
                           kb_search.parse_product_lines(args.product_lines),
                           kb_search.parse_product_lines(args.old_terms), args.agent_budget)
         print(f"Plan v{plan['version']}: {len(plan['candidates'])} candidate(s).")
@@ -805,7 +814,7 @@ def _dispatch(args):
             print(f"  {a['n']}. {a['title']}  ({a.get('workspace')})")
     elif args.command == "phase2":
         links = [l.strip() for l in (args.archived_targets or "").split(",") if l.strip()]
-        run_phase2(args.run, args.provider, links or None, args.confirm_overwrite)
+        run_phase2(args.run, links or None, args.confirm_overwrite)
         show(args.run)
     else:
         show(args.run)

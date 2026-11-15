@@ -2,7 +2,7 @@
 recorder for everything that would happen on it.
 
 There is no real Jira here. A ticket is a summary, a free-text description,
-optional PDF attachments and an assignee, written by the writer and stored
+optional product lines, optional PDF attachments and an assignee, written by the writer and stored
 in its own run folder. Every status move and comment the pipeline would
 make on a real ticket is recorded locally instead, in the same layout as
 the I2P backtest (i2p-agent-master/.claude/skills/i2p-backtest), so the
@@ -21,16 +21,27 @@ article content.
 The four statuses are the I2P board's, in the same order:
 To Do -> In Draft -> Peer review -> For review.
 
-    python3 doc_sync/ticket.py new <name> --summary "..." --description-file desc.txt [--attach prd.pdf ...]
+    python3 doc_sync/ticket.py new <name> --summary "..." --description-file desc.txt \
+        [--product-lines "DAP for Web, DAP for Desktop"] [--attach prd.pdf ...]
     python3 doc_sync/ticket.py update <name> --description-file desc.txt   # fix a bounced ticket
+
+PRODUCT LINES (2026-11-15). The ticket creator MAY set them as a field
+(`--product-lines`, like a Jira field). When set, intake uses exactly those
+and predicts nothing. When not set, intake takes the ones the summary or
+description names, or else predicts them for the writer to confirm
+(ticket_intake.py).
     python3 doc_sync/ticket.py show <name>
 """
 import argparse
 import json
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))  # workspaces.py
+import workspaces
 
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 
@@ -69,10 +80,28 @@ def _next_key():
     return f"{KEY_PREFIX}{n:02d}"
 
 
-def new_run(name, summary, description, attachments=(), assignee="Writer"):
+def check_product_lines(names):
+    """The ticket creator's product lines in the allow-list's spelling,
+    de-duplicated. Raises ValueError naming any that isn't one of the six
+    live workspaces, so a typo is caught when the ticket is made."""
+    out, bad = [], []
+    for name in names or []:
+        version_id = workspaces.id_for_name(name)
+        if not version_id:
+            bad.append(name)
+        elif workspaces.LIVE_WORKSPACES[version_id] not in out:
+            out.append(workspaces.LIVE_WORKSPACES[version_id])
+    if bad:
+        raise ValueError(f"Not a live product line: {', '.join(repr(b) for b in bad)}. "
+                         f"The product lines are: {', '.join(workspaces.names())}.")
+    return out
+
+
+def new_run(name, summary, description, attachments=(), assignee="Writer", product_lines=None):
     """Create runs/<name>/ with its ticket.json and copies of the attachments.
     Refuses a name that exists or isn't a short lowercase slug. Returns the
-    run folder."""
+    run folder. `product_lines` is the optional field set by the ticket's
+    creator (check_product_lines)."""
     if not _NAME_RE.match(name or ""):
         raise ValueError(f"Run name {name!r} must be a lowercase slug, e.g. 'dap-display-names'.")
     rd = RUNS_DIR / name
@@ -80,6 +109,7 @@ def new_run(name, summary, description, attachments=(), assignee="Writer"):
         raise FileExistsError(f"Run {name!r} already exists at {rd} — pick another name.")
     if not (summary or "").strip():
         raise ValueError("A ticket needs a summary.")
+    product_lines = check_product_lines(product_lines)
     sources = [Path(a).expanduser() for a in attachments or ()]
     for src in sources:
         if not src.is_file():
@@ -98,6 +128,7 @@ def new_run(name, summary, description, attachments=(), assignee="Writer"):
         "summary": summary.strip(),
         "description": (description or "").strip(),
         "assignee": (assignee or "Writer").strip(),
+        "product_lines": product_lines,
         "attachments": names,
         "status": TO_DO,
         "created_at": _now(),
@@ -107,7 +138,7 @@ def new_run(name, summary, description, attachments=(), assignee="Writer"):
     return rd
 
 
-def update_ticket(run, summary=None, description=None, attachments=()):
+def update_ticket(run, summary=None, description=None, attachments=(), product_lines=None):
     """Edit a ticket the way a writer fixes one that was bounced: new
     summary/description, more attachments. Only in To Do, so a ticket the
     pipeline is already working from never changes underneath it."""
@@ -122,6 +153,9 @@ def update_ticket(run, summary=None, description=None, attachments=()):
     if description is not None:
         tk["description"] = description.strip()
         changed.append("description")
+    if product_lines is not None:
+        tk["product_lines"] = check_product_lines(product_lines)
+        changed.append("product lines")
     for a in attachments or ():
         src = Path(a).expanduser()
         if not src.is_file() or src.suffix.lower() != ".pdf":
@@ -203,6 +237,9 @@ def main():
     desc = new_p.add_mutually_exclusive_group()
     desc.add_argument("--description", default="", help="The ticket's description, word for word")
     desc.add_argument("--description-file", help="Read the description from this file instead")
+    new_p.add_argument("--product-lines", default=None,
+                       help="Optional: the product lines this change ships in, comma-separated (e.g. 'DAP "
+                            "for Web, DAP for Desktop'). Set, they are used as is and none are predicted.")
     new_p.add_argument("--attach", action="append", default=[], help="A PDF attachment (repeatable)")
     new_p.add_argument("--assignee", default="Writer", help="The writer's name, shown on the artifact")
 
@@ -212,6 +249,8 @@ def main():
     upd_desc = upd_p.add_mutually_exclusive_group()
     upd_desc.add_argument("--description")
     upd_desc.add_argument("--description-file")
+    upd_p.add_argument("--product-lines", default=None,
+                       help="Set the product lines field, comma-separated; pass \"\" to clear it")
     upd_p.add_argument("--attach", action="append", default=[], help="Add a PDF attachment (repeatable)")
 
     show_p = sub.add_parser("show", help="Print a run's ticket and its recorded activity")
@@ -220,16 +259,22 @@ def main():
     args = parser.parse_args()
     if args.command == "new":
         description = Path(args.description_file).read_text() if args.description_file else args.description
-        rd = new_run(args.name, args.summary, description, args.attach, args.assignee)
+        rd = new_run(args.name, args.summary, description, args.attach, args.assignee,
+                     _split(args.product_lines))
         print(f"Created {load_ticket(rd)['key']} in {rd}")
     elif args.command == "update":
         description = Path(args.description_file).read_text() if args.description_file else args.description
-        tk = update_ticket(args.name, args.summary, description, args.attach)
+        lines = None if args.product_lines is None else _split(args.product_lines)
+        tk = update_ticket(args.name, args.summary, description, args.attach, lines)
         print(f"Updated {tk['key']}")
     else:
         print(json.dumps(load_ticket(args.name), indent=2))
         for e in load_log(args.name):
             print(" ", json.dumps(e))
+
+
+def _split(text):
+    return [n.strip() for n in (text or "").split(",") if n.strip()]
 
 
 if __name__ == "__main__":

@@ -16,11 +16,11 @@ learning (recording confirmed candidates back into `tag_map.json`) is not
 built.
 
 **Standing decisions, current as of this doc:**
-- **Claude is the default provider** (since 2026-11-06) for triage and
-  assessment, called through `claude -p` on the writer's Claude Code
-  login (`claude_call.py`, `claude-sonnet-5-5`), so no
-  `ANTHROPIC_API_KEY` is needed. **Gemini is the fallback**
-  (`--provider gemini`, `gemini-3.5-flash`, needs `GEMINI_API_KEY`).
+- **Claude is the only model provider** for every step, called through
+  `claude -p` on the writer's Claude Code login (`claude_call.py`,
+  `claude-sonnet-5-5`), so no `ANTHROPIC_API_KEY` is needed. The Gemini
+  fallback was removed on 2026-11-15: no Gemini key can be provisioned
+  for production.
 - **Live articles are only read.** Ticket runs save drafts in the run
   folder, or write them into Archived scratch articles the writer lists
   (`archived_writer.py`, built but not used live yet). `pipeline.py run`
@@ -45,7 +45,7 @@ Python modules sit directly in `doc_sync/`, so every command is `python doc_sync
 | File | Stage | Role |
 |---|---|---|
 | `ticket.py` | 1 | The simulated Jira ticket a run starts from (summary, free-text description, PDF attachments, assignee) in its own `runs/<name>/` folder, and the local recorder for its status moves and comments (`out/jira_log.json`, `out/comment-NN.txt`). Nothing touches a real Jira |
-| `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`prompts/ticket_intake.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
+| `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`prompts/ticket_intake.md`). Product lines come from the ticket's field, else the ones the ticket names, else a prediction for the writer to confirm; bounces the ticket to To Do if none |
 | `ticket_run.py` | 1-4 | The ticket's steps: `intake`, `phase1` (discovery -> numbered candidate plan comment, In Draft -> Peer review), `replan` (writer feedback -> revised plan), `approve` (plan numbers -> `approved.json`, Peer review -> For review), `phase2` (assess approved articles, save or write drafts, final comment), `show` |
 | `build_artifact.py`, `templates/artifact.html` | 5 | The Jira-style artifact page for a run, as the I2P backtest builds one: ticket header, details sidebar, activity timeline (status moves, comments reproduced exactly, the extracted change note, the approval), proposed edits as word-level before/after diffs, and a footnote on how the run differs from production. Writes `runs/<name>/artifact.html`; publish it with the Artifact tool |
 | `archive_plan.py`, `prompts/archive.md` | 4 | Phase 2 for articles to archive: redirect target, runner-up, dependents, inbound links and unresolved links, for the "drafts ready" comment; no edit, no Document360 write |
@@ -62,7 +62,6 @@ Python modules sit directly in `doc_sync/`, so every command is `python doc_sync
 | `eval_recall.py`, `eval/keys/` | — | Discovery recall benchmark: scores the shortlist (free) and the plan (`--triage`) against writer-confirmed answer keys (see "Recall benchmark") |
 | `prompts/kb_search.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
 | `assess.py` | 3 | **Claude path — default**, through `claude_call.py`; no API key needed |
-| `assess_gemini.py` | 3 | Gemini path — fallback (`--provider gemini`), needs `GEMINI_API_KEY` |
 | `prompts/assess.md` | 3 | Fixed task instructions, concatenated at runtime with `guidelines/document360-formatting.md`, `guidelines/whatfix-writing-guidelines-agent.md` and the article's product reference files; shared by both assess modules |
 | `product_context.py` | 2-3 | Picks which product reference files a prompt carries, by product line — the article's own workspace first, then the change note's `product_line`, then DAP for Web |
 | `product_reference/`: `dap-core.md`, `dap-web.md`, `dap-desktop.md`, `dap-os.md`, `dap-mobile.md`, `product-analytics.md`, `mirror.md` | 2-3 (reference) | Product reference files: concepts, terminology, and a fixed snapshot of each workspace's category structure. The four `dap-*` surface files are deltas on `dap-core.md` and always load with it |
@@ -70,7 +69,6 @@ Python modules sit directly in `doc_sync/`, so every command is `python doc_sync
 | `verify.py` | 4 | Cheap post-write checks, shown to the reviewer before they decide: old wording that was in the article word for word is gone, HTML intact, no big shrink, no images lost. (No "new text present" check since 2026-11-06: a change note's `new` is a summary sentence, so it fired on nearly every draft) |
 | `review_queue.py` | 5 | JSON-backed pending/approved/rejected/merge_conflict queue |
 | `claude_call.py` | 2-3 | Every Claude call goes through here: `claude -p` with `--json-schema` structured output, run from a temp folder outside the repo (so no `CLAUDE.md` is loaded) with `ANTHROPIC_API_KEY` stripped; retries, a per-call report, a call log (`data/model_calls.jsonl`) and the shared local response cache. `python3 doc_sync/claude_call.py selftest` checks it works |
-| `gemini_call.py` | 2-3 | Every Gemini call goes through here: retries, a per-call token report, and the opt-in local response cache (`DOC_SYNC_LLM_CACHE=1`) |
 | `mock_d360.py` | — | Local file-backed stand-in for Document360, including the fork; current default target |
 | `pipeline.py` | orchestrator | `run` and `review` CLI commands |
 | `../core/workspaces.py` | — | The six live workspaces Doc Sync may read from or write to. Fails closed |
@@ -89,9 +87,7 @@ first import. The commands below write `python3` for brevity.
 
 Requires everything already in `.env` (`D360_API_KEY`, `D360_PROJECT_ID`,
 `D360_FOLDER_ID`, `D360_USER_ID`), plus the `claude` CLI installed and
-logged in (`python3 doc_sync/claude_call.py selftest` should answer) for
-the default provider. `GEMINI_API_KEY` is needed only for
-`--provider gemini` (including `ticket_run.py intake --provider gemini`).
+logged in (`python3 doc_sync/claude_call.py selftest` should answer).
 `ANTHROPIC_API_KEY` is never
 needed, and is stripped from `claude -p`'s environment if set, so calls
 always run on the Claude Code login. `beautifulsoup4` (in
@@ -130,11 +126,24 @@ ticket, copies of its attachments, the extracted `change_note.json`, and
 real ticket is recorded (`jira_log.json`, `comment-NN.txt`). The statuses
 are the I2P board's: To Do -> In Draft -> Peer review -> For review.
 
-**Product lines are a prerequisite.** Name them anywhere in the summary or
-description, in your own words ("ships on web and desktop"). Intake maps
-them onto the six live workspaces and records the exact words it took
-them from. It never picks one itself, and never takes one from an
-attachment alone. A ticket that names none is **bounced**: a comment says
+**Product lines** (2026-11-15) decide which workspaces are searched.
+Intake takes them from, in order:
+
+1. The ticket's **product lines field**, when its creator sets one
+   (`ticket.py new <name> ... --product-lines "DAP for Web, DAP for Desktop"`,
+   checked against the six live workspaces when the ticket is made).
+   Used exactly as given; nothing is predicted.
+2. The product lines the summary or description **names**, in the
+   writer's own words ("ships on web and desktop"), mapped onto the six
+   live workspaces, with the exact words recorded.
+3. Otherwise, a **prediction** from the whole ticket, attachments
+   included, made in the same intake call (no extra model call; about
+   550 more input tokens). A "product lines predicted" comment says which
+   and why, and the writer confirms them or overrides them before the
+   search: `ticket_run.py phase1 <name> --product-lines "..."` saves the
+   writer's choice in the change note.
+
+A ticket with none of the three is **bounced**: a comment says
 what to add, the ticket moves back to To Do, and no change note is saved.
 Fix it with `ticket.py update <name> --description-file ...` and run intake
 again. An attachment that can't be read (over 10 MB or 300 pages, not a
@@ -146,8 +155,7 @@ Do with a comment, so it can always be retried.
 the old words ("Widgets page"), so intake extracts them as `old_terms`
 when the ticket or an attachment says what the old state was called.
 When it doesn't, a second small call suggests some from the product
-reference for the ticket's product lines (`old_terms_suggested`, Claude
-only), and an "old wording" comment lists them for the writer to confirm.
+reference for the ticket's product lines (`old_terms_suggested`), and an "old wording" comment lists them for the writer to confirm.
 Discovery searches for both. The writer corrects them on a re-plan:
 `ticket_run.py replan <name> --old-terms "Widgets page, Widgets section"`
 replaces intake's terms in the saved change note. A suggestion is only as
@@ -292,9 +300,8 @@ python3 doc_sync/pipeline.py review approve <item_id>
 python3 doc_sync/pipeline.py review reject <item_id>
 ```
 
-The `run` command above defaults to `--provider claude` against the mock
-archive — add `--live` once real Document360 access is available, and
-`--provider gemini` to use the Gemini fallback for triage and assessment. Add
+The `run` command above runs against the mock
+archive — add `--live` once real Document360 access is available. Add
 `--discovery index` to search article bodies with the knowledge index
 instead of triaging every title. Either way the search covers the change
 note's product lines; `--product-lines "DAP for Web, DAP for Desktop"`
@@ -351,17 +358,16 @@ rejected one, both stay manual actions you take directly in Document360.
 
 ## Saving tokens while testing
 
-Every model call prints what it spent: Claude calls as
-`model, in / out, seconds, $cost` (and every one is appended to
-`data/model_calls.jsonl`), Gemini calls as `in / out, of it thinking`.
+Every model call prints what it spent, as
+`model, in / out, seconds, $cost`, and every one is appended to
+`data/model_calls.jsonl`.
 The dollar figure is what `claude -p` reports for the call; it counts
 against the Claude Code plan, not an API bill. Claude Code caches the
 long shared system prompt (style guides plus product files), so
 consecutive assessments cost far less than the first (measured
 2026-11-06: $0.19 for the first, $0.01–0.03 after).
 
-To replay instead of re-spending, set `DOC_SYNC_LLM_CACHE=1` (works for
-both providers):
+To replay instead of re-spending, set `DOC_SYNC_LLM_CACHE=1`:
 
 ```
 DOC_SYNC_LLM_CACHE=1 python3 doc_sync/pipeline.py run --change-note ...
@@ -373,9 +379,6 @@ note, same article content, same prompt and reference files, same
 model settings) is answered from `data/llm_cache/` at 0 tokens; any
 difference makes a real call. It is off by default, so leave it unset
 for a live demo. Delete `data/llm_cache/` to start fresh.
-
-Gemini's own context caching is not used: this key is on the free tier,
-whose cached-content storage limit is 0 (refused on 2026-11-06).
 
 ## Document360 API behavior — verified 2026-11-04
 
@@ -625,8 +628,7 @@ so it can open articles and follow leads.
   `--max-budget-usd` (checked between turns, so a run can go a little
   over).
 - Fallback: a workspace where no run succeeded is triaged the index way
-  instead, and the plan comment says so. Gemini (`--provider gemini`)
-  runs as index mode.
+  instead, and the plan comment says so.
 - Cost: each step prints its model cost and logs a `cost` event in
   `out/jira_log.json`. It is deliberately NOT in the plan, comments or
   the artifact (writer decision, 2026-11-10).

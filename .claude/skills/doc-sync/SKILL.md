@@ -45,17 +45,19 @@ put it in a shell variable; zsh passes `$P` as one word and the command fails.
 Ask the writer for:
 
 1. **Summary**: the Jira title, word for word.
-2. **Description**: word for word. It must **name the product lines** the change
-   ships in (any wording: "web and desktop", "DAP for Mobile", "Mirror"). If it
-   doesn't, say intake will bounce it and ask them to add them. The six live
-   product lines are DAP for Web, DAP for Desktop, DAP on OS, DAP for Mobile,
-   Product Analytics and Whatfix Mirror.
-3. **Old wording** (recommended): what the product called the thing before the
+2. **Description**: word for word.
+3. **Product lines** (optional): the product lines the change ships in. The six
+   live product lines are DAP for Web, DAP for Desktop, DAP on OS, DAP for Mobile,
+   Product Analytics and Whatfix Mirror. If the writer gives them, set them as the
+   ticket's field (`--product-lines`); intake then uses exactly those and predicts
+   nothing. If not, intake takes any the description names, or else predicts them
+   for the writer to confirm.
+4. **Old wording** (recommended): what the product called the thing before the
    change (the old tab, page, menu or button name, e.g. "Widgets page"). Outdated
    articles still use those words, so they're what finds them. Ask for it to go in
    the description. If the writer doesn't know, intake suggests some.
-4. **Attachments** (optional): PDF paths, e.g. a PRD or product note.
-5. **Assignee**: the writer's name, shown on the artifact.
+5. **Attachments** (optional): PDF paths, e.g. a PRD or product note.
+6. **Assignee**: the writer's name, shown on the artifact.
 
 Pick a run name: a lowercase slug, `<product>-<feature>` (e.g. `dap-display-names`),
 not already in `doc_sync/runs/`. Write the description to a file in your scratchpad
@@ -63,7 +65,7 @@ so quotes and line breaks survive, then:
 
 ```bash
 $P doc_sync/ticket.py new <name> --assignee "<name>" --summary "<summary>" \
-    --description-file <desc file> [--attach "<pdf>" ...]
+    --description-file <desc file> [--product-lines "<line 1>, <line 2>"] [--attach "<pdf>" ...]
 ```
 
 ## Step 2: Intake (To Do -> In Draft)
@@ -75,8 +77,14 @@ $P doc_sync/ticket_run.py intake <name>
 - **Bounced** (exit 1, "Bounced to To Do"): show the writer the reasons. Fix the ticket
   with `$P doc_sync/ticket.py update <name> --description-file <file>` and run intake
   again.
-- **OK**: show the product lines it found and the words they came from. If the
-  writer disagrees, stop and fix the description; don't override silently.
+- **OK**: show the product lines and where they came from (the ticket's field, the
+  words that named them, or a prediction and its reason).
+  - **Predicted** ("PREDICTED, writer to confirm"): show the "product lines
+    predicted" comment and **wait for the writer to confirm or correct them before
+    phase 1**. A correction goes in on phase 1:
+    `$P doc_sync/ticket_run.py phase1 <name> --product-lines "<line 1>, <line 2>"`.
+  - Set on the ticket or named in it: if the writer disagrees, pass
+    `--product-lines` on phase 1 the same way; don't override silently.
 - An "attachments not read" comment means a PDF was skipped (too big, scanned, not a
   PDF). Tell the writer.
 - Show the "old wording" comment as recorded. When the terms are **suggested**, ask

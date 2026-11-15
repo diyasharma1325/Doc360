@@ -354,7 +354,7 @@ def _second_round(scope, first, by_ws, remaining):
 def _fallback(change_note, ws, seeds, revision):
     """Index-mode triage over a workspace's must-review list, for when no
     agent run there succeeded. Raises if this fails too."""
-    picked = kb_search.triage_shortlist(change_note, seeds, [ws], provider="claude", revision=revision,
+    picked = kb_search.triage_shortlist(change_note, seeds, [ws], revision=revision,
                                         label=f"fallback triage: {ws}") if seeds else []
     return [{**c, "workspace": ws, "verdict": "potentially_affected", "action": "edit", "evidence": "",
              "found_by": "index (agent fallback)", "runs_flagged": 0, "runs": 0} for c in picked]

@@ -5,8 +5,7 @@ harness.py): system prompt from a file, request on stdin, no tools, no
 settings, no MCP servers, no slash commands, no saved session.
 
 Structured output comes from `--json-schema`: the CLI answers with a parsed
-`structured_output` object matching the schema, the same shape the Gemini
-path gets from its forced function call. No regex over free text.
+`structured_output` object matching the schema. No regex over free text.
 
 Three things that matter, all deliberate:
 
@@ -18,13 +17,14 @@ Three things that matter, all deliberate:
 - NO API KEY. ANTHROPIC_API_KEY is stripped from the child's environment, so
   a key in .env can never silently switch these calls to API billing.
 - EVERY CALL IS LOGGED to data/model_calls.jsonl (model, label, seconds,
-  tokens, cost as the CLI reports it), and printed in one line, like
-  gemini_call.py's token report.
+  tokens, cost as the CLI reports it), and printed in one line.
 
-The opt-in local response cache (DOC_SYNC_LLM_CACHE=1) is shared with
-gemini_call.py: an exactly repeated request (same model, system prompt,
-request, schema and output limit) is replayed from data/llm_cache/ at 0
-tokens. Off by default.
+The opt-in local response cache (DOC_SYNC_LLM_CACHE=1): an exactly repeated
+request (same model, system prompt, request, schema and output limit) is
+replayed from data/llm_cache/ at 0 tokens. Off by default.
+
+Claude is the only model provider (2026-11-15): the Gemini fallback was
+removed, since no Gemini key can be provisioned for production.
 
     python3 doc_sync/claude_call.py selftest [--model claude-haiku-4-5]
 """
@@ -40,12 +40,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
-
-# Which model provider doc-sync uses for triage and assessment. "claude"
-# (this module) is the default; "gemini" (gemini_call.py) is the fallback,
-# picked with --provider gemini.
-PROVIDERS = ("claude", "gemini")
-DEFAULT_PROVIDER = "claude"
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 CACHE_DIR = DATA_DIR / "llm_cache"
@@ -191,7 +185,7 @@ def _run_once(model, system, user, schema, max_tokens, tools=None, cwd=None, bud
                               cwd=cwd or _cwd(), env=env, timeout=TIMEOUT_S)
     except FileNotFoundError:
         raise ClaudeCallError("The `claude` CLI is not on PATH. Install Claude Code and log in "
-                              "(`claude -p \"hi\"` should answer), or pass --provider gemini.")
+                              "(`claude -p \"hi\"` should answer).")
     except subprocess.TimeoutExpired:
         raise ClaudeCallError(f"claude -p did not answer within {TIMEOUT_S}s")
     finally:
