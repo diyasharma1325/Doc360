@@ -34,7 +34,8 @@ put it in a shell variable; zsh passes `$P` as one word and the command fails.
 
 - `.env` has `D360_API_KEY` (reads only, for discovery and assessment).
 - The `claude` CLI is logged in: `$P doc_sync/claude_call.py selftest` answers.
-- For index discovery (the default on ticket runs), a knowledge index exists:
+- For agent discovery (the default on ticket runs) and index discovery, a knowledge
+  index exists (agent mode makes its plain-text copy from it, in seconds):
   `$P doc_sync/kb_index.py status`. If it's over 48 hours old, say so and offer a
   rebuild (`$P doc_sync/kb_index.py build`, read-only, ~40 minutes, run in the
   background). Don't block the run on it.
@@ -44,13 +45,19 @@ put it in a shell variable; zsh passes `$P` as one word and the command fails.
 Ask the writer for:
 
 1. **Summary**: the Jira title, word for word.
-2. **Description**: word for word. It must **name the product lines** the change
-   ships in (any wording: "web and desktop", "DAP for Mobile", "Mirror"). If it
-   doesn't, say intake will bounce it and ask them to add them. The six live
-   product lines are DAP for Web, DAP for Desktop, DAP on OS, DAP for Mobile,
-   Product Analytics and Whatfix Mirror.
-3. **Attachments** (optional): PDF paths, e.g. a PRD or product note.
-4. **Assignee**: the writer's name, shown on the artifact.
+2. **Description**: word for word.
+3. **Product lines** (optional): the product lines the change ships in. The six
+   live product lines are DAP for Web, DAP for Desktop, DAP on OS, DAP for Mobile,
+   Product Analytics and Whatfix Mirror. If the writer gives them, set them as the
+   ticket's field (`--product-lines`); intake then uses exactly those and predicts
+   nothing. If not, intake takes any the description names, or else predicts them
+   for the writer to confirm.
+4. **Old wording** (recommended): what the product called the thing before the
+   change (the old tab, page, menu or button name, e.g. "Widgets page"). Outdated
+   articles still use those words, so they're what finds them. Ask for it to go in
+   the description. If the writer doesn't know, intake suggests some.
+5. **Attachments** (optional): PDF paths, e.g. a PRD or product note.
+6. **Assignee**: the writer's name, shown on the artifact.
 
 Pick a run name: a lowercase slug, `<product>-<feature>` (e.g. `dap-display-names`),
 not already in `doc_sync/runs/`. Write the description to a file in your scratchpad
@@ -58,7 +65,7 @@ so quotes and line breaks survive, then:
 
 ```bash
 $P doc_sync/ticket.py new <name> --assignee "<name>" --summary "<summary>" \
-    --description-file <desc file> [--attach "<pdf>" ...]
+    --description-file <desc file> [--product-lines "<line 1>, <line 2>"] [--attach "<pdf>" ...]
 ```
 
 ## Step 2: Intake (To Do -> In Draft)
@@ -70,31 +77,61 @@ $P doc_sync/ticket_run.py intake <name>
 - **Bounced** (exit 1, "Bounced to To Do"): show the writer the reasons. Fix the ticket
   with `$P doc_sync/ticket.py update <name> --description-file <file>` and run intake
   again.
-- **OK**: show the product lines it found and the words they came from. If the
-  writer disagrees, stop and fix the description; don't override silently.
+- **OK**: show the product lines and where they came from (the ticket's field, the
+  words that named them, or a prediction and its reason).
+  - **Predicted** ("PREDICTED, writer to confirm"): show the "product lines
+    predicted" comment and **wait for the writer to confirm or correct them before
+    phase 1**. A correction goes in on phase 1:
+    `$P doc_sync/ticket_run.py phase1 <name> --product-lines "<line 1>, <line 2>"`.
+  - Set on the ticket or named in it: if the writer disagrees, pass
+    `--product-lines` on phase 1 the same way; don't override silently.
 - An "attachments not read" comment means a PDF was skipped (too big, scanned, not a
   PDF). Tell the writer.
+- Show the "old wording" comment as recorded. When the terms are **suggested**, ask
+  the writer to confirm or correct them. A correction goes in on the plan step:
+  `$P doc_sync/ticket_run.py replan <name> --old-terms "<term 1>, <term 2>"`.
+- Show the "UI facts" comment as recorded: what the UI looks like **after** the change,
+  including what stays the same. Screenshots are judged against these, so ask the
+  writer to confirm or correct them, especially what stays (for example a menu entry
+  that remains for other content). A correction, or facts when the ticket gave none:
+  `$P doc_sync/ticket_run.py facts <name> "<fact 1>; <fact 2>"`. It can be run at any
+  point before phase 2, or in For review before the screenshots step.
 
 ## Step 3: Phase 1, the candidate plan (In Draft -> Peer review)
 
 ```bash
-$P doc_sync/ticket_run.py phase1 <name>                    # index search (default)
-$P doc_sync/ticket_run.py phase1 <name> --discovery both   # index + a strict title check
+$P doc_sync/ticket_run.py phase1 <name>                     # agent search (default)
+$P doc_sync/ticket_run.py phase1 <name> --discovery index   # quicker keyword search + triage
 ```
 
-Use `both` when the writer asks for a thorough search, or the change is broad (many
-content types or surfaces). It adds a "Found by" column; `both` is the strongest
-signal. Takes a minute or two.
+The default runs Claude agents that search and read a copy of the knowledge base, two
+runs per product line, within a per-ticket budget (`--agent-budget`, default $5).
+Takes one to three minutes; run it in the background. Each plan row has a
+**verdict** (affected, or possibly); articles to **archive** rather than edit are
+marked, and so are **screenshots only** articles, whose text is right but whose
+screenshots (read with OCR) still show the old UI. If the plan has a "full search didn't finish" note, tell the writer which
+product line fell back to the keyword search. Use `--discovery index` only if the
+writer asks for a quick search.
+
+The step prints its model cost and logs it in `out/jira_log.json`. Don't put the
+cost in the plan, a comment or the artifact, and don't bring it up unless the writer
+asks: they decided (2026-11-10) it stays out of anything shared.
 
 Show the writer the plan: the latest `doc_sync/runs/<name>/out/comment-NN.txt`,
 as plain text, every row, numbered exactly as recorded. Then ask them to either
 **approve by number** or **say what to change**.
 
+The plan lists, under the table, every article about an affected content type that
+triage **left out**, by title. Show that too: it's where the writer spots a miss.
+
 To revise:
 
 ```bash
-$P doc_sync/ticket_run.py replan <name> "<the writer's feedback, word for word>" [--product-lines "..."]
+$P doc_sync/ticket_run.py replan <name> "<the writer's feedback, word for word>" [--product-lines "..."] [--old-terms "..."]
 ```
+
+`--old-terms` replaces the old wording intake stated or suggested; use it when the
+writer corrects it. Feedback can be left out when `--old-terms` is the only change.
 
 Show the revised plan the same way, and ask again. Repeat as needed.
 
@@ -115,8 +152,14 @@ show the message and ask again.
 $P doc_sync/ticket_run.py phase2 <name>
 ```
 
+Approved articles marked **archive** in the plan are not edited. Phase 2 recommends
+instead: a redirect target for the article's URL, which articles link to it (approved
+ones get their link repointed in their draft), articles that may need archiving too,
+and links from it that lead nowhere. This goes in the "drafts ready" comment only.
+Nothing is archived and no redirect is set up; the writer does both in Document360.
+
 **Into Archived scratch articles**, only if the writer asks for it and gives one
-Archived portal link per approved article
+Archived portal link per approved article to edit (articles to archive need none)
 (`https://portal.document360.io/<project>/document/archived/view/<id>`):
 
 ```bash
@@ -128,10 +171,50 @@ current title. Show the writer that list, say the content and title of each will
 overwritten with no undo, and get an explicit yes. Then run the same command with
 `--confirm-overwrite`. Live articles can't be written by any path.
 
-Phase 2 makes one model call per approved article and can take several minutes; run
-it in the background. When it finishes, show the "drafts ready" comment (the latest
+**Screenshots.** Phase 2 also checks every screenshot of each approved article against
+the change and its UI facts: **fine**, **to check** (it can't tell), or **to retake**
+with instructions. When another article already has a screenshot of the same screen in
+the new UI, it is put straight into the draft (**replaced from another article**); the
+writer confirms each one. Screenshots-only articles skip the text check, and get a
+draft only if a screenshot was replaced. `--no-screenshots` skips the check for the
+others.
+
+Phase 2 makes one or more model calls per approved article (text, then screenshots)
+and can take several minutes; run it in the background. When it finishes, show the "drafts ready" comment (the latest
 `comment-NN.txt`) as recorded. If any article **failed**, running phase 2 again
 retries only those.
+
+## Step 5b: Screenshots (For review)
+
+The "drafts ready" comment's **Screenshots** section lists, per article, what to do:
+
+- **To retake**: the writer saves each new screenshot as a PNG at the path shown,
+  `doc_sync/runs/<name>/screenshots/<plan #>/<image #>.png` (e.g. `screenshots/3/010.png`).
+  The I2P extension's **Free Capture**, then **Download all**, gives the house frame.
+- **To check**: the writer looks in the product; if it's fine, `--fine 3:12`.
+- **Replaced from another article**: to undo one, `--reject 3:1` (it becomes a retake).
+
+First check the saved retakes without uploading or writing anything:
+
+```bash
+$P doc_sync/ticket_run.py screenshots <name> --check-only
+```
+
+Show the result. A retake the check doesn't accept says why; the writer retakes it.
+Then, once the writer agrees the accepted ones go up, run it for real:
+
+```bash
+$P doc_sync/ticket_run.py screenshots <name> [--fine "3:12"] [--reject "3:1"]
+```
+
+This uploads each accepted retake to Document360 Drive (the I2P agent's folder; it
+needs `D360_DRIVE_FOLDER_ID` and `D360_USER_ID` in `.env`), puts it in the draft, and writes
+the draft again: into the article's Archived draft when it has one, otherwise in the run
+folder. A screenshots-only article with no draft yet needs an Archived link
+(`--archived-targets "<link>"` plus `--confirm-overwrite`, confirmed as in phase 2) to
+get one there. A Drive upload adds a file and can't be undone from here, so get the
+writer's yes before the real run. Show the "screenshots updated" comment as recorded.
+Run it again as more retakes come in.
 
 ## Step 6: The artifact
 
@@ -150,7 +233,11 @@ file path again so the link stays the same.
 
 - `doc_sync/runs/<name>/`: the run (git-ignored). `ticket.json`, `attachments/`,
   `change_note.json`, `plan.json`, `approved.json`, `results.json`, `artifact.html`,
-  and `out/` with `jira_log.json`, `comment-NN.txt` and `articles/` (before/after HTML).
+  `screenshots/` (the writer's retakes) and `out/` with `jira_log.json`,
+  `comment-NN.txt`, `articles/` (before/after HTML) and `images/` (each article's
+  screenshots as reviewed, with `review.json`).
+- `doc_sync/data/screenshots.db`: the screenshot record (OCR text, verdicts, and the
+  images known to show each change's new UI, which replacements are drawn from).
 - `$P doc_sync/ticket_run.py show <name>`: status, plan, approval and phase 2 results
   at a glance.
 - `doc_sync/README.md`: how every stage works and why.

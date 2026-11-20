@@ -14,6 +14,11 @@ from assess import _extract_image_srcs
 from d360_client import Document360Client
 
 
+def _image_path(src):
+    """An image URL without its query string or fragment."""
+    return src.split("#", 1)[0].split("?", 1)[0]
+
+
 @dataclass
 class VerificationResult:
     ok: bool
@@ -27,7 +32,10 @@ def _old_texts(change_note):
     return [o.strip() for o in olds if o and o.strip()]
 
 
-def verify_article(article_id, change_note, before_html, client=None):
+def verify_article(article_id, change_note, before_html, client=None, swaps=None):
+    """`swaps`: the screenshot replacements the draft is meant to carry,
+    {old image path: new src}. Each must have landed (old image gone, new
+    one there), and an image swapped on purpose is not "missing"."""
     client = client or Document360Client()
     after_html = client.get_article(article_id)["data"].get("html_content", "")
 
@@ -49,8 +57,24 @@ def verify_article(article_id, change_note, before_html, client=None):
     if before_html and len(after_html) < len(before_html) * 0.5:
         warnings.append(f"Content shrank by more than half ({len(before_html)} -> {len(after_html)} chars)")
 
-    missing_images = set(_extract_image_srcs(before_html)) - set(_extract_image_srcs(after_html))
+    # Compared without the query string: Document360 serves image URLs with a
+    # time-limited SAS signature (?sv=...&se=...&sig=...) that changes on every
+    # read, so a before/after read minutes apart flagged EVERY image as missing
+    # (2026-11-11, WSC-900010; all images were present on read-back).
+    swaps = {old: _image_path(new) for old, new in (swaps or {}).items()}
+    missing_images = set(map(_image_path, _extract_image_srcs(before_html))) \
+        - set(map(_image_path, _extract_image_srcs(after_html))) - set(swaps)
     if missing_images:
         warnings.append(f"{len(missing_images)} image(s) missing after the edit: {sorted(missing_images)}")
+
+    if swaps:
+        import screenshots
+
+        after_paths = {i["path"] for i in screenshots.article_images(after_html)}
+        for old, new in swaps.items():
+            if old in after_paths:
+                warnings.append(f"A screenshot meant to be replaced is still there: {old.rsplit('/', 1)[-1]}")
+            if not any(p == new or p.rsplit("/", 1)[-1] == new.rsplit("/", 1)[-1] for p in after_paths):
+                warnings.append(f"A replacement screenshot is missing from the draft: {new.rsplit('/', 1)[-1]}")
 
     return VerificationResult(ok=not warnings, warnings=warnings)

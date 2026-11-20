@@ -16,33 +16,40 @@ learning (recording confirmed candidates back into `tag_map.json`) is not
 built.
 
 **Standing decisions, current as of this doc:**
-- **Claude is the default provider** (since 2026-11-06) for triage and
-  assessment, called through `claude -p` on the writer's Claude Code
-  login (`claude_call.py`, `claude-sonnet-5-5`), so no
-  `ANTHROPIC_API_KEY` is needed. **Gemini is the fallback**
-  (`--provider gemini`, `gemini-3.5-flash`, needs `GEMINI_API_KEY`).
+- **Claude is the only model provider** for every step, called through
+  `claude -p` on the writer's Claude Code login (`claude_call.py`,
+  `claude-sonnet-5-5`), so no `ANTHROPIC_API_KEY` is needed. The Gemini
+  fallback was removed on 2026-11-15: no Gemini key can be provisioned
+  for production.
 - **Live articles are only read.** Ticket runs save drafts in the run
   folder, or write them into Archived scratch articles the writer lists
-  (`archived_writer.py`, built but not used live yet). `pipeline.py run`
+  (`archived_writer.py`; tested live end to end on 2026-11-11, run
+  `ai-popups-e2e`). `pipeline.py run`
   writes to the local mock archive (`mock_d360.py`) unless `--live`.
 - **Six live workspaces are in scope** for discovery and assessment
   (`core/workspaces.py`): DAP for Web, DAP for Desktop, DAP on OS, DAP for
   Mobile, Product Analytics and Whatfix Mirror. Anything else — Archived,
   Seek, and the non-public workspaces — is refused. Seek is excluded for
   now by decision (2026-11-04), not by limitation.
-- **Ticket runs search article bodies by default** (`index`, 2026-11-07),
-  scoped to the product lines the ticket names; `both` adds a strict title
-  check. `pipeline.py run` and `kb_search.py` still default to title-only
-  discovery. See "Discovery scope" and "Index discovery" below.
+- **Ticket runs use agent discovery by default** (`agent`, 2026-11-10):
+  Claude agents with read-only tools search and read a plain-text copy of
+  each workspace the ticket names. `index` (keyword search of article
+  bodies plus triage) was the default before; `both` adds a strict title
+  check to it. `pipeline.py run` and `kb_search.py` still default to
+  title-only discovery. See "Discovery scope", "Agent discovery" and
+  "Index discovery" below.
 
 ## Files
+
+Python modules sit directly in `doc_sync/`, so every command is `python doc_sync/<module>.py`. Everything else is grouped: model instructions in `prompts/`, product reference files in `product_reference/`, the artifact page in `templates/`, local state in `data/`, ticket runs in `runs/` and the recall benchmark in `eval/`.
 
 | File | Stage | Role |
 |---|---|---|
 | `ticket.py` | 1 | The simulated Jira ticket a run starts from (summary, free-text description, PDF attachments, assignee) in its own `runs/<name>/` folder, and the local recorder for its status moves and comments (`out/jira_log.json`, `out/comment-NN.txt`). Nothing touches a real Jira |
-| `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`ticket_intake_prompt.md`). Extracts the product lines the writer named and bounces the ticket to To Do if none is named |
+| `ticket_intake.py` | 1 | The ticket -> a change note, in one model call (`prompts/ticket_intake.md`). Product lines come from the ticket's field, else the ones the ticket names, else a prediction for the writer to confirm; bounces the ticket to To Do if none |
 | `ticket_run.py` | 1-4 | The ticket's steps: `intake`, `phase1` (discovery -> numbered candidate plan comment, In Draft -> Peer review), `replan` (writer feedback -> revised plan), `approve` (plan numbers -> `approved.json`, Peer review -> For review), `phase2` (assess approved articles, save or write drafts, final comment), `show` |
-| `build_artifact.py`, `artifact_template.html` | 5 | The Jira-style artifact page for a run, as the I2P backtest builds one: ticket header, details sidebar, activity timeline (status moves, comments reproduced exactly, the extracted change note, the approval), proposed edits as word-level before/after diffs, and a footnote on how the run differs from production. Writes `runs/<name>/artifact.html`; publish it with the Artifact tool |
+| `build_artifact.py`, `templates/artifact.html` | 5 | The Jira-style artifact page for a run, as the I2P backtest builds one: ticket header, details sidebar, activity timeline (status moves, comments reproduced exactly, the extracted change note, the approval), proposed edits as word-level before/after diffs, and a footnote on how the run differs from production. Writes `runs/<name>/artifact.html`; publish it with the Artifact tool |
+| `archive_plan.py`, `prompts/archive.md` | 4 | Phase 2 for articles to archive: redirect target, runner-up, dependents, inbound links and unresolved links, for the "drafts ready" comment; no edit, no Document360 write |
 | `archived_writer.py` | 4 | The only way a ticket run writes to Document360: into the writer's listed Archived scratch articles, never a live one. Refuses unlisted ids and anything not in the Archived workspace, names every target before an overwrite, direct update (never a fork or publish) |
 | `pdf_text.py` | 1 | Ticket PDF attachments -> text (pdfplumber, tables as Markdown), with the I2P agent's 10 MB / 300-page limits |
 | `change_note.py` | 1 | Defines and validates the change-note shape, including the `product_lines` list |
@@ -50,17 +57,23 @@ built.
 | `candidates.py` | 2 | Looks up candidates from the tag map (fuzzy-match fallback on `feature_area` typos); returns `[]`, not an error, when there's no confident match, so `pipeline.py` can fall back to a live search |
 | `kb_search.py` | 2 | Live search, scoped to the change note's product lines (see "Discovery scope" below), two modes. **titles** (default): walks each workspace in scope and semantically triages every title against the change note (one model call per workspace). **index** (opt-in): searches article bodies in scope with `kb_index.py`, then triages only that shortlist. `pipeline.py` runs this automatically whenever `candidates.py` finds no tag_map entry — see "Live KB search" and "Index discovery" below |
 | `kb_index.py` | 2 (state) | Local full-text index of every published article body in the six live workspaces (`data/knowledge.db`, git-ignored). `build` (~30-40 min, read-only), `status`, `search`. Built all-or-nothing |
-| `kb_search_prompt.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
+| `prompts/old_terms.md` | 1 | Instructions for intake's second call, which suggests the old wording when the ticket gives none (see "Old wording") |
+| `kb_mirror.py` | 2 | Exports the knowledge index to a plain-text copy, one `.md` per article (`data/kb_mirror/`, git-ignored, seconds, no network), for agent discovery |
+| `discovery_agent.py`, `prompts/discovery_agent.md` | 2 | Agent discovery: read-only Claude agents over the copy, two runs per workspace within a per-ticket budget, verdicts with an edit/archive action, keyword-triage fallback (see "Agent discovery") |
+| `eval_recall.py`, `eval/keys/` | — | Discovery recall benchmark: scores the shortlist (free) and the plan (`--triage`) against writer-confirmed answer keys (see "Recall benchmark") |
+| `prompts/kb_search.md` | 2 (experimental) | Fixed task instructions for `kb_search.py`'s triage call |
 | `assess.py` | 3 | **Claude path — default**, through `claude_call.py`; no API key needed |
-| `assess_gemini.py` | 3 | Gemini path — fallback (`--provider gemini`), needs `GEMINI_API_KEY` |
-| `assess_prompt.md` | 3 | Fixed task instructions, concatenated at runtime with `guidelines/document360-formatting.md`, `guidelines/whatfix-writing-guidelines-agent.md` and the article's product reference files; shared by both assess modules |
+| `prompts/assess.md` | 3 | Fixed task instructions, concatenated at runtime with `guidelines/document360-formatting.md`, `guidelines/whatfix-writing-guidelines-agent.md` and the article's product reference files; shared by both assess modules |
 | `product_context.py` | 2-3 | Picks which product reference files a prompt carries, by product line — the article's own workspace first, then the change note's `product_line`, then DAP for Web |
-| `dap-core.md`, `dap-web.md`, `dap-desktop.md`, `dap-os.md`, `dap-mobile.md`, `product-analytics.md`, `mirror.md` | 2-3 (reference) | Product reference files: concepts, terminology, and a fixed snapshot of each workspace's category structure. The four `dap-*` surface files are deltas on `dap-core.md` and always load with it |
+| `product_reference/`: `dap-core.md`, `dap-web.md`, `dap-desktop.md`, `dap-os.md`, `dap-mobile.md`, `product-analytics.md`, `mirror.md` | 2-3 (reference) | Product reference files: concepts, terminology, and a fixed snapshot of each workspace's category structure. The four `dap-*` surface files are deltas on `dap-core.md` and always load with it |
 | `draft_writer.py` | 4 | Only file that writes to Document360. Checks for an existing draft FIRST, then forks the article into a new draft version and writes into that; never publishes |
+| `screenshots.py` | 2-4 | Images in article HTML (position, path, alt, step text), downloads with an overall deadline, GIFs tiled into one sheet, Tesseract OCR, the one-attribute `src` swap, upload checks (PNG, 10 MB, 40 MP), and the screenshot record `data/screenshots.db` (OCR cache, verdicts, images known to show a change's new UI). `ocr --workspace` fills OCR into the index in place (see "Screenshots") |
+| `image_review.py` | 4 | Phase 2's vision calls: review an article's screenshots, compare a stale one with replacement candidates, check a writer's retakes (see "Screenshots") |
+| `screenshot_step.py` | 4 | The screenshot review inside phase 2, the comment section that reports it, and the `screenshots` step that brings in retakes |
+| `d360_drive.py` | 4 | Uploads a retake to Document360 Drive (the I2P agent's folder and contract) |
 | `verify.py` | 4 | Cheap post-write checks, shown to the reviewer before they decide: old wording that was in the article word for word is gone, HTML intact, no big shrink, no images lost. (No "new text present" check since 2026-11-06: a change note's `new` is a summary sentence, so it fired on nearly every draft) |
 | `review_queue.py` | 5 | JSON-backed pending/approved/rejected/merge_conflict queue |
 | `claude_call.py` | 2-3 | Every Claude call goes through here: `claude -p` with `--json-schema` structured output, run from a temp folder outside the repo (so no `CLAUDE.md` is loaded) with `ANTHROPIC_API_KEY` stripped; retries, a per-call report, a call log (`data/model_calls.jsonl`) and the shared local response cache. `python3 doc_sync/claude_call.py selftest` checks it works |
-| `gemini_call.py` | 2-3 | Every Gemini call goes through here: retries, a per-call token report, and the opt-in local response cache (`DOC_SYNC_LLM_CACHE=1`) |
 | `mock_d360.py` | — | Local file-backed stand-in for Document360, including the fork; current default target |
 | `pipeline.py` | orchestrator | `run` and `review` CLI commands |
 | `../core/workspaces.py` | — | The six live workspaces Doc Sync may read from or write to. Fails closed |
@@ -78,14 +91,19 @@ the macOS system Python has none of these packages, so it fails on the
 first import. The commands below write `python3` for brevity.
 
 Requires everything already in `.env` (`D360_API_KEY`, `D360_PROJECT_ID`,
-`D360_FOLDER_ID`, `D360_USER_ID`), plus the `claude` CLI installed and
-logged in (`python3 doc_sync/claude_call.py selftest` should answer) for
-the default provider. `GEMINI_API_KEY` is needed only for
-`--provider gemini` (including `ticket_run.py intake --provider gemini`).
-`ANTHROPIC_API_KEY` is never
+`D360_FOLDER_ID`, `D360_USER_ID`, and for screenshot uploads
+`D360_DRIVE_FOLDER_ID` and `D360_DRIVE_PROJECT_ID`), plus the `claude`
+CLI installed and logged in (`python3 doc_sync/claude_call.py selftest`
+should answer). `ANTHROPIC_API_KEY` is never
 needed, and is stripped from `claude -p`'s environment if set, so calls
 always run on the Claude Code login. `beautifulsoup4` (in
 `requirements.txt`) is needed only to build the knowledge index.
+
+Screenshot handling also needs **Tesseract** (`brew install tesseract`)
+for OCR during the index build and phase 2's screenshot review. Pillow (in
+`requirements.txt`) decodes the images. Without Tesseract the index
+builds without screenshot text and phase 2 still reviews screenshots,
+but OCR-based matching is skipped.
 
 All commands below assume you're running from the repo root (`Doc360/`),
 same as `core/cli.py` and `core/discover.py` — `doc_sync/assess.py` and
@@ -109,7 +127,10 @@ python3 doc_sync/ticket_run.py replan  dap-display-names "Drop 2; also check Tas
 python3 doc_sync/ticket_run.py approve dap-display-names "1, 3-5"       # Peer review -> For review
 python3 doc_sync/ticket_run.py phase2  dap-display-names               # drafts saved in the run folder
 python3 doc_sync/ticket_run.py phase2  dap-display-names \
-    --archived-targets "<archived link 1>, <archived link 2>, ..." --confirm-overwrite   # (not used yet)
+    --archived-targets "<archived link 1>, <archived link 2>, ..." --confirm-overwrite
+python3 doc_sync/ticket_run.py facts   dap-display-names "<fact>; <fact>"   # UI facts screenshots are judged against
+python3 doc_sync/ticket_run.py screenshots dap-display-names --check-only   # check the writer's retakes
+python3 doc_sync/ticket_run.py screenshots dap-display-names [--fine 3:12] [--reject 3:1]   # upload + put in the draft
 python3 doc_sync/ticket_run.py show    dap-display-names               # status, plan, approval
 python3 doc_sync/ticket.py show dap-display-names                      # ticket + every recorded event
 ```
@@ -120,11 +141,24 @@ ticket, copies of its attachments, the extracted `change_note.json`, and
 real ticket is recorded (`jira_log.json`, `comment-NN.txt`). The statuses
 are the I2P board's: To Do -> In Draft -> Peer review -> For review.
 
-**Product lines are a prerequisite.** Name them anywhere in the summary or
-description, in your own words ("ships on web and desktop"). Intake maps
-them onto the six live workspaces and records the exact words it took
-them from. It never picks one itself, and never takes one from an
-attachment alone. A ticket that names none is **bounced**: a comment says
+**Product lines** (2026-11-15) decide which workspaces are searched.
+Intake takes them from, in order:
+
+1. The ticket's **product lines field**, when its creator sets one
+   (`ticket.py new <name> ... --product-lines "DAP for Web, DAP for Desktop"`,
+   checked against the six live workspaces when the ticket is made).
+   Used exactly as given; nothing is predicted.
+2. The product lines the summary or description **names**, in the
+   writer's own words ("ships on web and desktop"), mapped onto the six
+   live workspaces, with the exact words recorded.
+3. Otherwise, a **prediction** from the whole ticket, attachments
+   included, made in the same intake call (no extra model call; about
+   550 more input tokens). A "product lines predicted" comment says which
+   and why, and the writer confirms them or overrides them before the
+   search: `ticket_run.py phase1 <name> --product-lines "..."` saves the
+   writer's choice in the change note.
+
+A ticket with none of the three is **bounced**: a comment says
 what to add, the ticket moves back to To Do, and no change note is saved.
 Fix it with `ticket.py update <name> --description-file ...` and run intake
 again. An attachment that can't be read (over 10 MB or 300 pages, not a
@@ -132,11 +166,23 @@ PDF, or a scanned image with no text) doesn't stop the run; a comment
 says it wasn't used. A failed model call also moves the ticket back to To
 Do with a comment, so it can always be retried.
 
+**Old wording** (2026-11-09). Outdated articles describe the old state in
+the old words ("Widgets page"), so intake extracts them as `old_terms`
+when the ticket or an attachment says what the old state was called.
+When it doesn't, a second small call suggests some from the product
+reference for the ticket's product lines (`old_terms_suggested`), and an "old wording" comment lists them for the writer to confirm.
+Discovery searches for both. The writer corrects them on a re-plan:
+`ticket_run.py replan <name> --old-terms "Widgets page, Widgets section"`
+replaces intake's terms in the saved change note. A suggestion is only as
+good as the product reference: the Unified Content Experience section in
+`dap-core.md` is what lets it name "Widgets page" for the Launchers change.
+
 **Phase 1: the candidate plan** (`ticket_run.py`). Discovery runs on the
 change note within the ticket's product lines (see "Discovery scope"
-below), in **index** mode by default on ticket runs (decided 2026-11-07;
-`--discovery both` adds a strict title check, `--discovery titles` is
-title-only), and the result is recorded as a numbered **candidate plan**
+below), in **agent** mode by default on ticket runs (decided 2026-11-10,
+see "Agent discovery"; `--discovery index` is the keyword search,
+`--discovery both` adds a strict title check to it, `--discovery titles`
+is title-only), and the result is recorded as a numbered **candidate plan**
 comment, moving the ticket In Draft -> Peer review. The plan is saved as
 `plan.json`. `tag_map.json` is not used on ticket runs: its ids are mock
 fixtures, not live articles. A failed phase 1 records a "plan failed"
@@ -174,6 +220,25 @@ saved in `out/articles/` (`NN-<slug>.before.html` / `.after.html`), then:
   read first and refused unless it is in the Archived workspace; without
   `--confirm-overwrite` the run names each target's current title and
   stops, since an overwrite has no undo.
+
+**Articles to archive** (plan action "archive", from agent discovery) are
+handled first and are never edited (`archive_plan.py`, 2026-11-11):
+
+- Candidates without a model call: the article's category siblings, the
+  articles its live HTML links to, and the articles that mention its
+  title in the plain-text copy. Then ONE model call (`prompts/archive.md`)
+  picks the **redirect target** (the article covering what replaces the
+  feature, else the category overview, else none), a runner-up and any
+  **dependent** articles that only make sense alongside it.
+- Approved articles that link to it (checked in their live HTML) or name
+  it are assessed with an extra instruction to point that reference to
+  the redirect target, or remove it if there's none. A draft that still
+  links to the archived URL gets a ⚠ warning.
+- Links from it that resolve to no published article (by slug against the
+  index) are listed: often unpublished FAQs about the same feature.
+- All of this goes in the "drafts ready" comment ONLY (writer decision).
+  Nothing is archived and no redirect is set up: the writer does both in
+  Document360. Archive articles need no Archived scratch target.
 
 Results are saved after every article (`results.json`), so re-running
 phase 2 retries only the failed ones and puts them in the next unused
@@ -250,9 +315,8 @@ python3 doc_sync/pipeline.py review approve <item_id>
 python3 doc_sync/pipeline.py review reject <item_id>
 ```
 
-The `run` command above defaults to `--provider claude` against the mock
-archive — add `--live` once real Document360 access is available, and
-`--provider gemini` to use the Gemini fallback for triage and assessment. Add
+The `run` command above runs against the mock
+archive — add `--live` once real Document360 access is available. Add
 `--discovery index` to search article bodies with the knowledge index
 instead of triaging every title. Either way the search covers the change
 note's product lines; `--product-lines "DAP for Web, DAP for Desktop"`
@@ -280,8 +344,9 @@ and a merged listing would go past what has been tested. Measured on
 101 candidates. Index mode on the same ticket: 24 shortlisted, one call,
 ~$0.13, 12 candidates. Titles sees only titles, so for a broad feature it
 over-includes by design; the candidate approval step is where that list
-gets cut. That comparison is why **ticket runs default to index mode**
-(`pipeline.py run` and `kb_search.py` still default to titles).
+gets cut. That comparison is why ticket runs defaulted to index mode
+from 2026-11-07 until agent mode replaced it (2026-11-10; `pipeline.py
+run` and `kb_search.py` still default to titles).
 
 **`--discovery both`** (2026-11-07) runs the two together: the index pass
 as usual, plus an independent title pass per workspace, run as a strict
@@ -308,17 +373,16 @@ rejected one, both stay manual actions you take directly in Document360.
 
 ## Saving tokens while testing
 
-Every model call prints what it spent: Claude calls as
-`model, in / out, seconds, $cost` (and every one is appended to
-`data/model_calls.jsonl`), Gemini calls as `in / out, of it thinking`.
+Every model call prints what it spent, as
+`model, in / out, seconds, $cost`, and every one is appended to
+`data/model_calls.jsonl`.
 The dollar figure is what `claude -p` reports for the call; it counts
 against the Claude Code plan, not an API bill. Claude Code caches the
 long shared system prompt (style guides plus product files), so
 consecutive assessments cost far less than the first (measured
 2026-11-06: $0.19 for the first, $0.01–0.03 after).
 
-To replay instead of re-spending, set `DOC_SYNC_LLM_CACHE=1` (works for
-both providers):
+To replay instead of re-spending, set `DOC_SYNC_LLM_CACHE=1`:
 
 ```
 DOC_SYNC_LLM_CACHE=1 python3 doc_sync/pipeline.py run --change-note ...
@@ -330,9 +394,6 @@ note, same article content, same prompt and reference files, same
 model settings) is answered from `data/llm_cache/` at 0 tokens; any
 difference makes a real call. It is off by default, so leave it unset
 for a live demo. Delete `data/llm_cache/` to start fresh.
-
-Gemini's own context caching is not used: this key is on the free tier,
-whose cached-content storage limit is 0 (refused on 2026-11-06).
 
 ## Document360 API behavior — verified 2026-11-04
 
@@ -470,8 +531,8 @@ in the pipeline six times larger. Index discovery addresses both:
    six live workspaces, searched locally at no model cost (SQLite FTS5,
    BM25 ranking, titles weighted above bodies).
 2. The search text is the change note's feature area, summary, OLD
-   wording (per content type when it has `changes`) and affected content
-   types. Deliberately excluded: the `new` wording (a stale article
+   wording (per content type when it has `changes`), old terms (stated or
+   suggested, see "Old wording" above) and affected content types. Deliberately excluded: the `new` wording (a stale article
    doesn't contain it yet), `notes` and `unaffected_content_types` —
    exclusion language like "Pop-ups did NOT move" is what once mined
    wrong keywords into discovery.
@@ -486,17 +547,35 @@ in the pipeline six times larger. Index discovery addresses both:
    "Popups"/"Popup" also match the hyphenated "Pop-ups" most articles
    use.
 3. Only the workspaces in scope are searched (see "Discovery scope").
-   Each is searched separately and capped at 12, so DAP for
-   Web (about half of all articles) can't crowd the others out; the
-   merged list is cut to the best 40.
+   With several in scope, each is searched separately and capped at 12,
+   so DAP for Web (about half of all articles) can't crowd the others
+   out; the merged list is cut to the best 40. With one in scope there is
+   nothing to balance, so it gets all 40 (2026-11-09: the cap of 12 left
+   out most of the 103 DAP for Web articles mentioning Launchers).
    Exception: when the feature's own name is rare (30 articles or
    fewer, e.g. "display name" in 28), every article naming it goes on
    the shortlist first, whatever its workspace in scope, and the rest is filled
    as above. The per-workspace cap otherwise cut 20 of the 26 DAP for
    Web articles naming "display name" (2026-11-06). A common name
    ("smart tips", 315) or one matching nothing leaves the search as is.
-4. That shortlist, each entry with its workspace and the matching
-   excerpt, goes to the same triage call, told it's a keyword-matched
+4. **Content-type sweep** (2026-11-09). Every article whose TITLE or
+   CATEGORY names an affected content type (`CONTENT_TYPES` in
+   `kb_search.py`: Flows, Smart Tips, Beacons, Pop-ups, Launchers,
+   Blockers, Surveys, Task List, Self Help, Cues, Static Content) joins
+   the shortlist ahead of the ranked 40, whatever it ranks: on the
+   Launchers ticket, ranking alone shortlisted 7 of the 27 articles a
+   writer expected, because "Dashboard" and "Studio" articles outranked
+   "What are Launchers?". A UI surface the ticket names ("Dashboard",
+   "Content tab") is not swept: it's in hundreds of articles. The sweep
+   holds at most 120, shared equally between the types (Flows alone is
+   ~190 in DAP for Web), best match to the change first; the plan
+   comment says how many of each type were checked, and lists by title
+   every swept article triage left out, so the writer can add one back.
+   Swept entries are marked `about: <type>` and triage is told to keep
+   them unless they plainly can't be affected.
+5. That shortlist, each entry with its workspace and the matching
+   excerpt, goes to triage in batches of 40 (one call each), each batch
+   told it's a shortlist rather than a full list, told it's a keyword-matched
    shortlist rather than a full list. An id the model returns that
    wasn't on the shortlist is dropped (title mode applies the same check
    to its full listing since 2026-11-06).
@@ -517,6 +596,65 @@ Two trade-offs, both open to revisit after comparison runs:
   with a pending draft, the draft's text. Harmless for discovery, since
   such an article is flagged for a manual merge anyway.
 
+**What the index reads** (2026-11-09): each article's visible text, plus
+the alt text of each image, where the image sits (a bare file name or a
+generic "image" is skipped). Screenshots carry much of an article's
+context ("Customize a Launcher": 11 images, 335 words, and "Dashboard"
+only in its screenshots); alt text is the free part of that. Text INSIDE
+screenshots is read too since 2026-11-20 (OCR, see "Screenshots"); semantic
+search is still planned. `status` shows `body_includes` and
+`screens_includes`; an index built before either says "text" / "none".
+
+**Recall benchmark** (`eval_recall.py`, 2026-11-09). Answer keys in
+`eval/keys/` list the articles a change really affects, confirmed by a
+writer. The script scores SHORTLIST recall (free, no model call: what
+reached the model) and, with `--triage`, PLAN recall (after triage),
+lists what was missed at each stage, and lists plan articles not in the
+key as "extra" rather than wrong. Run it before and after any change to
+discovery. Two keys, both confirmed by a writer (2026-11-10):
+`launchers-content-tab` (13 affected) and `ai-popups-deprecation` (7
+affected, one to archive; a HYPOTHETICAL change used only for testing).
+A key may also list `not_affected` articles (so a plan's wrong picks are
+told apart from articles nobody has reviewed), `ignore` (left out of
+scoring) and `"action": "archive"` on an expected article (scored against
+agent mode's archive flags). `--discovery agent` scores agent mode.
+
+## Agent discovery (`--discovery agent`, the ticket-run default)
+
+Why: index triage judges each shortlisted article from its title and a
+~30-word excerpt, with no tools, so it drops articles whose excerpt
+doesn't look affected and can never find one the keyword search didn't
+shortlist. Agent mode gives Claude read-only Grep / Glob / Read over a
+plain-text copy of the workspace (`kb_mirror.py`, made from the index),
+so it can open articles and follow leads.
+
+- One agent per workspace in scope, each in a temporary copy of that
+  workspace outside the repo. The index shortlist is its must-review
+  list: every article on it gets a verdict, and one it doesn't judge is
+  kept as "possibly affected".
+- Verdicts: affected, potentially affected, not affected, with an
+  action: edit, or **archive** (the article's main subject is removed).
+  The not-affected verdicts are saved in `plan.json` with reasons.
+- Two runs per workspace, merged (the most cautious verdict wins): one
+  run varies. A per-ticket budget (`--agent-budget`, or
+  `$DOC_SYNC_AGENT_BUDGET`, default $5) decides how: two full runs at
+  once when it covers them everywhere, else run 1 everywhere first and
+  then a full second run, a cheaper recheck of what run 1 cleared, or
+  nothing, by what's left. Each run is capped by the CLI's
+  `--max-budget-usd` (checked between turns, so a run can go a little
+  over).
+- Fallback: a workspace where no run succeeded is triaged the index way
+  instead, and the plan comment says so.
+- Cost: each step prints its model cost and logs a `cost` event in
+  `out/jira_log.json`. It is deliberately NOT in the plan, comments or
+  the artifact (writer decision, 2026-11-10).
+
+Measured 2026-11-10 (two confirmed keys, DAP for Web): agent 19 of 20
+affected articles found, plans of 7 and 19; index 17 of 20, plans of 18
+and 34. Agent ~$0.50 and ~1 minute per single-workspace ticket; index
+~$0.10 and ~25 seconds. Phase 2 handles "archive" articles with a recommendation, not an edit
+(see "Phase 2" above). Known gap: headings aren't marked in the copy (the index stores flattened text).
+
 The index is built all-or-nothing: a build writes a fresh database and
 swaps it in only once every article read has succeeded, so a failed
 build leaves the previous index exactly as it was. There is no
@@ -532,15 +670,79 @@ workspace (read off the live article), else the change note's
 built exactly as before this existed. The content maps inside these
 files are fixed snapshots; the knowledge index is the up-to-date source.
 
+## Screenshots (2026-11-20)
+
+Outdated screenshots are found, replaced and reviewed the same way as text.
+The plan (writer decision 2026-11-19): **the writer captures, the pipeline
+does the rest**. Automated capture (Playwright) is deferred.
+
+1. **Finding them.** The index records every article's images and the
+   text Tesseract reads in them (`screens` column, `images` table; OCR
+   cached per image in `data/screenshots.db`, so only new images are read
+   on a rebuild). The KB copy lists it under "## Screenshot text" with
+   each image's number and step, so the discovery agent can mark an
+   article **screenshots only** (action `images`): text right, screenshots
+   showing the old UI. An OCR hit is a lead, never a verdict: in the
+   feasibility check "Widgets" was in 9 screenshots but only 2 were stale,
+   because the nav entry stays for other content.
+2. **UI facts.** The change note carries what the UI looks like after the
+   change, including what stays the same. Intake extracts them, the writer
+   confirms them (`facts`). Without them, two reviews of the same nav entry
+   disagreed about whether it was gone.
+3. **Judging them (phase 2).** Every screenshot of each approved article
+   goes to Claude (vision through the Read tool, in a temp folder outside
+   the repo) with the change note, UI facts, step text and alt text:
+   **fine**, **unsure** (to check in the product) or **stale** with retake
+   instructions. GIFs are sent as one sheet of 4 sampled frames. Calls take
+   8 images each and run in parallel (the model reads one image per turn).
+   Screenshots-only articles skip the text assessment.
+4. **Replacements.** For each stale screenshot, candidates come from the
+   images already known to show this change's new UI (a fine screenshot of
+   the changed area, a kept reuse, an uploaded retake) and from indexed
+   screenshots whose OCR text is close. One compare call decides:
+   **drop-in** (same screen, same element highlighted, new UI: the `src`
+   is swapped in the draft at once, the writer confirms or `--reject`s it),
+   **close** (a retake, with the candidate as a reference) or none.
+5. **Retakes (`screenshots` step).** The writer saves PNGs at
+   `runs/<run>/screenshots/<plan #>/<image #>.png` (the I2P extension's
+   Free Capture -> Download all gives the house frame; writer decision
+   2026-11-20: keep it, even beside older unframed screenshots). Each is
+   checked (PNG, 10 MB, 40 MP, then a vision check against the old one and
+   the retake instructions), uploaded to Document360 Drive
+   (`D360_DRIVE_FOLDER_ID`, `D360_USER_ID`), swapped in, and the draft is
+   written again. `--check-only` stops before any upload.
+
+**Swaps change only the `src` (and alt) of the image's own tag**, by path,
+so each tag keeps its width and settings and the rest of the article is
+untouched. `verify.py` checks every intended swap landed and doesn't count
+a swapped image as missing.
+
+**Image URLs.** Document360 signs image URLs for ~15 minutes and re-signs
+them on every read; the bare path returns 404. So images are identified by
+path without the query string, downloads use a src from a fresh read, and
+a swap writes the bare path, which Document360 signs on the next read
+(checked 2026-11-20 on a draft written 9 days before).
+
+**OCR without a rebuild:** `python3 doc_sync/screenshots.py ocr
+--workspace "DAP for Web"` re-reads one workspace's articles and fills the
+index in place (needs an index built after 2026-11-20).
+
 ## Not yet done
 
-- **The end-to-end test with Archived writes**: one ticket run through the
-  `doc-sync` skill, writing its drafts into Archived scratch articles, then
-  the artifact. Archived writes have so far been tested against a fake
-  client only (decision 2026-11-07).
-- **Compare discovery modes on more tickets.** Index became the ticket-run
-  default after one broad and one narrow ticket (2026-11-07); `both` is
-  there to check whether the title pass keeps finding real gaps.
+- **The retake leg, live.** Done 2026-11-20: the first index build with
+  OCR (2,752 articles, 29 minutes), a test upload to Document360 Drive,
+  and a full phase 2 with screenshot review on run `dap-uce-e2e`
+  (Archived drafts written, stale and unsure screenshots flagged). Not yet
+  run live: a writer's real retakes going through `screenshots` (check,
+  Drive upload, `src` swap, draft rewrite, read-back). The stubbed paths
+  pass.
+- **Compare discovery modes on more tickets.** Agent discovery is the
+  ticket-run default since 2026-11-10; `index` and `both` remain for
+  comparison.
+- **More answer keys.** The benchmark has one draft key; recall on one
+  ticket says little. Each real ticket run whose plan a writer corrects
+  is a key waiting to be written down.
+- **Semantic search** (embeddings beside the keyword search).
 - **Validate recall** against a known set of real articles in the
   correct workspaces (everything tested before 2026-10-29 was against the
   wrong one).

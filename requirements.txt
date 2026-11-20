@@ -1,5 +1,5 @@
 requests>=2.31
 python-dotenv>=1.0
-google-genai>=1.0  # Gemini fallback (--provider gemini) only; Claude runs via the claude CLI
 beautifulsoup4>=4.12  # kb_index.py — article HTML to searchable text
 pdfplumber>=0.11  # pdf_text.py — ticket PDF attachments to text for intake
+Pillow>=10.0  # screenshots.py — image decoding, GIF frame sheets, retake checks

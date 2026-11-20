@@ -289,6 +289,22 @@ Premium-only.
   **upgraded** from old to new; both can co-exist during migration. When documenting, match the
   account's experience — don't mix the two vocabularies.
 
+### Unified Content Experience: Content and Widgets merged
+
+**Source:** https://support.whatfix.com/docs/en/unified-dashboard-experience
+
+- Before it, **Smart Tips, Beacons, Launchers, and Blockers** were split into a **Content** item and a
+  **Widget** item. On the Dashboard, content was edited on the **Content** page while its Visibility
+  Rules were on the **Widgets** page; in Studio they appeared in the **Widgets** section. Publishing,
+  deleting and archiving had to be done for the content and the widget separately.
+- With it, they appear **only under Content** (Dashboard and Studio), Visibility Rules are managed
+  inside each content item as **Collection Visibility Rules**, and publish, delete and archive act on
+  the whole item. Widget folders no longer exist for them.
+- **Pop-ups, Surveys, Self Help and Task List are not affected.** Applies to DAP for Web and DAP for
+  Desktop; Beta, enabled on request.
+- Articles written before it describe the old state with words like **Widgets page**, **Widgets
+  section**, **Widget**, **Content/Widget**, and **publish the widget and/or content**.
+
 ### Deployment & gating
 
 - Two delivery methods on Web: **JS Embed** (preferred when you can modify app source) and

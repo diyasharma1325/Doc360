@@ -1,5 +1,5 @@
 """Stage 1 (Intake): the structured note that drives both discovery
-(candidates.py/kb_search.py) and assessment (assess.py/assess_gemini.py).
+(candidates.py/kb_search.py) and assessment (assess.py).
 Everything downstream reads off this shape.
 
 `old`/`new`/`summary` remain the required, always-present fields — a
@@ -27,6 +27,22 @@ ticket_intake.py rather than being hand-typed):
   - `changes`: a list of {content_type, old, new} for when different
     content types need different wording — one shared old/new sentence
     doesn't scale past two or three types without getting vague.
+  - `old_terms` / `old_terms_suggested` (2026-11-09): the UI wording the
+    OUTDATED articles use for the old state ("Widgets tab"), which is what
+    discovery has to search for: a stale article doesn't contain the new
+    wording yet. `old_terms` is what the ticket or an attachment stated;
+    `old_terms_suggested` is intake's suggestion when it stated none, from
+    the product reference, shown to the writer to confirm. Discovery uses
+    both. A Launchers ticket that never said "Widgets" searched only for
+    "Content tab" and missed the articles still saying "Widgets".
+
+  - `ui_facts` (2026-11-20): plain statements of what the product's UI
+    looks like after the change, INCLUDING what stays the same ("The
+    Widgets entry stays in the Dashboard nav for Pop-ups, Self Help and
+    Task List"). Screenshot review judges and writes retake instructions
+    against these; without them it guessed, and two reviews of the same
+    nav entry disagreed (2026-11-19). Intake extracts them; the writer
+    confirms or replaces them (`ticket_run.py facts`).
 
 A change note with only the required fields still works everywhere;
 code that wants the richer structure checks whether these are populated
@@ -56,9 +72,27 @@ class ChangeNote:
     notes: str = ""       # anything else worth telling the agent
     product_line: str = ""  # real Document360 workspace name, e.g. "DAP for Web"
     product_lines: List[str] = field(default_factory=list)  # every live workspace the change ships in
+    # Where product_lines came from (ticket_intake.py): "ticket" (the field
+    # the ticket creator set), "named" (the summary or description named
+    # them), "predicted" (the model's prediction, writer to confirm or
+    # override) or "writer" (an override at phase 1). Empty on older notes.
+    product_lines_source: str = ""
+    product_lines_basis: str = ""  # the quote they were named in, or why they were predicted
     affected_content_types: List[str] = field(default_factory=list)
     unaffected_content_types: List[str] = field(default_factory=list)
     changes: List[ContentChange] = field(default_factory=list)
+    old_terms: List[str] = field(default_factory=list)
+    old_terms_suggested: List[str] = field(default_factory=list)
+    ui_facts: List[str] = field(default_factory=list)
+    ui_facts_source: str = ""  # "ticket" (intake) or "writer"
+
+    def all_old_terms(self):
+        """Stated old terms, then suggested ones, de-duplicated."""
+        out = []
+        for t in list(self.old_terms or []) + list(self.old_terms_suggested or []):
+            if t and t.strip() and t.strip().lower() not in [o.lower() for o in out]:
+                out.append(t.strip())
+        return out
 
 
 REQUIRED_FIELDS = ["feature_area", "summary", "old", "new"]
@@ -84,9 +118,15 @@ def load_change_note(path):
         notes=data.get("notes", ""),
         product_line=product_line,
         product_lines=product_lines,
+        product_lines_source=data.get("product_lines_source", ""),
+        product_lines_basis=data.get("product_lines_basis", ""),
         affected_content_types=list(data.get("affected_content_types") or []),
         unaffected_content_types=list(data.get("unaffected_content_types") or []),
         changes=[ContentChange(**c) for c in data.get("changes") or []],
+        old_terms=list(data.get("old_terms") or []),
+        old_terms_suggested=list(data.get("old_terms_suggested") or []),
+        ui_facts=list(data.get("ui_facts") or []),
+        ui_facts_source=data.get("ui_facts_source", ""),
     )
 
 
@@ -109,9 +149,15 @@ def scaffold(path):
         "notes": "",
         "product_line": "",
         "product_lines": [],
+        "product_lines_source": "",
+        "product_lines_basis": "",
         "affected_content_types": [],
         "unaffected_content_types": [],
         "changes": [],
+        "old_terms": [],
+        "old_terms_suggested": [],
+        "ui_facts": [],
+        "ui_facts_source": "",
     }
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:

@@ -1,11 +1,9 @@
-"""Stage 3 (agent), Claude path — the DEFAULT provider: reads one
+"""Stage 3 (agent): reads one
 article's real content against a change note and decides whether it needs
 an edit, and if so, what the edit is.
 
 Calls Claude through `claude -p` on the writer's Claude Code login
-(claude_call.py), so no ANTHROPIC_API_KEY is needed. assess_gemini.py is the
-fallback (`--provider gemini`); it reuses this module's prompt and input
-builders, so the two providers are never shown different inputs.
+(claude_call.py), so no ANTHROPIC_API_KEY is needed.
 """
 import html
 import re
@@ -23,11 +21,13 @@ import product_context
 from d360_client import Document360Client
 
 MODEL = claude_call.DEFAULT_MODEL
-ROOT = THIS_DIR  # assess_prompt.md lives alongside this file
+PROMPTS_DIR = THIS_DIR / "prompts"
 
 # A flagged article comes back as its FULL corrected html_content, which can
-# run tens of KB — the same headroom assess_gemini.py gives it.
-MAX_OUTPUT_TOKENS = 32768
+# run tens of KB. 32768 was too small for the DAP for Web Whatfix Glossary
+# (2026-11-11); 64000 is a stopgap until assessment returns targeted edits
+# instead of the whole article.
+MAX_OUTPUT_TOKENS = 64000
 
 MAX_IMAGES = 6  # cap per article on the image-src scan verify.py uses for its missing-image check
 IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\'>]+)["\']', re.IGNORECASE)
@@ -49,8 +49,7 @@ ASSESS_SCHEMA = {
 
 class AssessmentError(RuntimeError):
     """Raised when a model's response can't be turned into an Assessment —
-    e.g. no tool call came back, or a required field is missing. Shared by
-    assess.py and assess_gemini.py so both providers fail the same way."""
+    e.g. no structured output came back, or a required field is missing."""
 
 
 @dataclass
@@ -79,7 +78,7 @@ def _assessment_from_result(result, original_html_content):
 
 
 def _load_system_prompt(product_line=None):
-    parts = [(ROOT / "assess_prompt.md").read_text()]
+    parts = [(PROMPTS_DIR / "assess.md").read_text()]
     for guideline in ("document360-formatting.md", "whatfix-writing-guidelines-agent.md"):
         path = REPO_ROOT / "guidelines" / guideline  # these live in ../guidelines, not here
         if path.exists():
@@ -108,9 +107,8 @@ def _extract_image_srcs(html_content):
     return seen[:MAX_IMAGES]
 
 
-def _build_change_note_text(change_note, html_content):
-    """Shared by assess.py and assess_gemini.py so both providers see the
-    exact same input. Renders the per-type `changes` list (when a change
+def _build_change_note_text(change_note, html_content, extra=None):
+    """Renders the per-type `changes` list (when a change
     note has one) as its own clearly-labeled section instead of cramming
     several content types into one old/new sentence — and lists
     `unaffected_content_types` explicitly so the model doesn't need to
@@ -131,22 +129,30 @@ def _build_change_note_text(change_note, html_content):
     else:
         lines.append(f"- old: {change_note.old}")
         lines.append(f"- new: {change_note.new}")
+    if getattr(change_note, "ui_facts", None):
+        lines.append("\nUI after the change (confirmed facts, including what stays the same):")
+        lines += [f"  - {f}" for f in change_note.ui_facts]
     if change_note.unaffected_content_types:
         lines.append(
             "\nExplicitly UNAFFECTED by this change (do not flag an article as "
             "needing this edit just because it covers one of these): "
             + ", ".join(change_note.unaffected_content_types)
         )
+    if extra:
+        # An instruction from phase 2, e.g. repoint links to an article being
+        # archived (archive_plan.repoint_instruction).
+        lines.append("\n" + extra)
     lines.append(f"\nArticle html_content:\n{html_content}")
     return "\n".join(lines)
 
 
-def assess_article(article_id, change_note, client=None):
+def assess_article(article_id, change_note, client=None, extra=None):
+    """`extra`: an additional instruction for this article (phase 2)."""
     client = client or Document360Client()
     article = client.get_article(article_id)["data"]
     html_content = article.get("html_content", "")
 
-    text = _build_change_note_text(change_note, html_content)
+    text = _build_change_note_text(change_note, html_content, extra)
 
     try:
         result = claude_call.generate(

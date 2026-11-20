@@ -28,5 +28,22 @@
     "id": "db0cb823",
     "created_at": "2026-11-02T08:44:55.463645+00:00",
     "resolved_at": "2026-11-02T08:45:32.704864+00:00"
+  },
+  {
+    "article_id": "10a26915-613b-4d5a-8211-cf35ef67b75c",
+    "feature_area": "Smart Tips",
+    "rationale": "Data validation through Smart Tips now supports Domain validation. The validation rules reference table needs to be updated to include the Domain rule and its description.",
+    "confidence": "high",
+    "status": "approved",
+    "note": "Draft written \u2014 review the latest draft version for this article directly in Document360. Verification found possible issues \u2014 see below before approving.",
+    "verification": {
+      "ok": false,
+      "warnings": [
+        "Expected new text not found: 'Data validation through smart tips now support domain validation. Users can validate domains through smart tips.'"
+      ]
+    },
+    "id": "083d0ff6",
+    "created_at": "2026-11-06T09:01:25.406025+00:00",
+    "resolved_at": "2026-11-06T09:05:01.372970+00:00"
   }
 ]

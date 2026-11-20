@@ -63,7 +63,7 @@ h1 { font-size: clamp(1.35rem, 1.1rem + 1vw, 1.75rem); line-height: 1.25; margin
 h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 6px; text-wrap: balance; }
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 32px; align-items: start; }
 @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } .side { order: -1; } }
-main { min-width: 0; display: grid; gap: 28px; }
+main { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
 .label { font-size: 11.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
 .desc { max-width: 68ch; margin: 0; white-space: pre-wrap; }
 .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
@@ -105,9 +105,11 @@ main { min-width: 0; display: grid; gap: 28px; }
 .comment li { margin: .15em 0; }
 .tablewrap { overflow-x: auto; margin: 8px 0; }
 .comment table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
-.comment th, .comment td { border: 1px solid var(--line); padding: 6px 9px; vertical-align: top; text-align: left; }
+.comment th, .comment td { border: 1px solid var(--line); padding: 6px 9px; vertical-align: top; text-align: left; overflow-wrap: anywhere; }
 .comment th { background: var(--soft); font-weight: 600; white-space: nowrap; }
 .comment td:first-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.longtable { margin: 8px 0; }
+.longtable summary { cursor: pointer; font-size: 13.5px; color: var(--link); font-weight: 500; }
 .note-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 4px 0 0; font-size: 13.5px; }
 .note-card dt { color: var(--muted); }
 .note-card dd { margin: 0; overflow-wrap: anywhere; }
@@ -132,6 +134,17 @@ del { background: var(--del-soft); color: var(--del); text-decoration: line-thro
 ins { background: var(--ins-soft); color: var(--ins); text-decoration: none; border-radius: 2px; }
 .diff .ln.del-line { background: var(--del-soft); }
 .diff .ln.ins-line { background: var(--ins-soft); }
+/* Screenshots */
+.shots { display: grid; gap: 10px; margin-top: 8px; }
+.shot { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+.shot figure { margin: 0; min-width: 0; }
+.shot img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+.shot figcaption { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.shot .what { grid-column: 1 / -1; font-size: 13.5px; margin: 0; overflow-wrap: anywhere; }
+.shot .empty { font-size: 13px; color: var(--muted); border: 1px dashed var(--line); border-radius: 4px; padding: 18px 10px; text-align: center; }
+.outcome.retake, .outcome.unsure { background: var(--warn-soft); color: var(--warn); }
+.outcome.reused, .outcome.replaced, .outcome.kept { background: var(--ins-soft); color: var(--ins); }
+@media (max-width: 640px) { .shot { grid-template-columns: minmax(0, 1fr); } }
 .footnote { margin-top: 36px; border-top: 1px solid var(--line); padding-top: 16px; font-size: 13px; color: var(--muted); max-width: 80ch; }
 .footnote p { margin: .4em 0; }
 </style>

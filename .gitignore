@@ -9,8 +9,11 @@ __pycache__/
 # Local knowledge index built by doc_sync/kb_index.py - rebuildable, never committed
 doc_sync/data/knowledge.db
 doc_sync/data/knowledge.db.building
+# Screenshot record (doc_sync/screenshots.py): OCR cache, verdicts, images showing a change's new UI
+doc_sync/data/screenshots.db
+doc_sync/data/screenshots.db-*
 
-# Local model response cache (gemini_call.py / claude_call.py, DOC_SYNC_LLM_CACHE=1)
+# Local model response cache (claude_call.py, DOC_SYNC_LLM_CACHE=1)
 doc_sync/data/llm_cache/
 
 # Per-call log of claude -p usage (doc_sync/claude_call.py)
@@ -18,3 +21,14 @@ doc_sync/data/model_calls.jsonl
 
 # Ticket runs (doc_sync/ticket.py) - copies of PDFs and live article content, kept local
 doc_sync/runs/
+
+# Discovery recall benchmark results (doc_sync/eval_recall.py) - local, rerunnable
+doc_sync/eval/results/
+doc_sync/data/kb_mirror/
+doc_sync/data/kb_mirror.building/
+
+# macOS Finder metadata
+.DS_Store
+
+# PRDs and product notes used as run inputs - kept local
+inputs/prds/

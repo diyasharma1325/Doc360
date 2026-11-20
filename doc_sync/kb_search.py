@@ -35,9 +35,7 @@ Two discovery modes (`discovery=`), "titles" being the default:
   index has been built.
 
 Read-only end to end — makes no writes, no queue entries, no draft edits.
-The triage call goes to Claude through `claude -p` by default
-(claude_call.py), or to Gemini (gemini-3.5-flash) with provider="gemini" —
-the same choice as the pipeline's --provider.
+The triage call goes to Claude through `claude -p` (claude_call.py).
 """
 import argparse
 import os
@@ -56,13 +54,10 @@ import workspaces
 from change_note import load_change_note
 from d360_client import Document360Client
 
-GEMINI_MODEL = "gemini-3.5-flash"
-# Same output ceiling for both providers. Gemini's thinking tokens share it,
-# which is what once produced a MAX_TOKENS failure here (see triage()).
 TRIAGE_MAX_OUTPUT_TOKENS = 16384
-PROMPT_PATH = os.path.join(os.path.dirname(__file__), "kb_search_prompt.md")
+PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "kb_search.md")
 
-DISCOVERY_MODES = ("titles", "index", "both")
+DISCOVERY_MODES = ("titles", "index", "both", "agent")
 DEFAULT_DISCOVERY = "titles"  # pipeline.py / this CLI; ticket runs default to "index" (ticket_run.py)
 
 # "both" mode (2026-11-07): the index pass, plus an independent title pass
@@ -102,7 +97,36 @@ INDEX_PRODUCT_CONTEXT_MAX_BYTES = 90_000
 # feedback join the shortlist (see find_candidates_indexed).
 INDEX_FEEDBACK_EXTRA = 12
 
-# Prepended to the triage request in "index" mode only. kb_search_prompt.md
+# The content-type sweep (2026-11-09). Every article whose TITLE or
+# CATEGORY names a content type the change affects joins the shortlist,
+# whatever its body ranks: on a DAP for Web Launchers ticket, ranking alone
+# shortlisted 12 of the 25 Launcher articles, because "Dashboard" and
+# "Studio" articles outranked "What are Launchers?". Only real content
+# types are swept; a UI surface the change names ("Dashboard", "Studio",
+# "Content tab") is in hundreds of articles and would sweep in everything.
+# Keys are the normalized name (see _type_key), values what is searched.
+CONTENT_TYPES = {
+    "flow": ["Flows"],
+    "smarttip": ["Smart Tips"],
+    "beacon": ["Beacons"],
+    "popup": ["Pop-ups", "Popups"],
+    "launcher": ["Launchers"],
+    "blocker": ["Blockers"],
+    "survey": ["Surveys"],
+    "tasklist": ["Task List"],
+    "selfhelp": ["Self Help"],
+    "cue": ["Cues"],
+    "staticcontent": ["Static Content"],
+}
+# At most this many swept articles, best match to the change first. One
+# type is ~10-50 articles in DAP for Web; Flows (~190) and Self Help (~150)
+# are the large ones, and the cut is reported on the plan.
+SWEEP_MAX = 120
+# Triage reads the shortlist this many entries per call, so a sweep can
+# make the shortlist several times longer than one call should carry.
+TRIAGE_BATCH = 40
+
+# Prepended to the triage request in "index" mode only. prompts/kb_search.md
 # describes a full title list, which a shortlist isn't — saying so here,
 # rather than editing that file, keeps "titles" mode's prompt unchanged.
 _SHORTLIST_NOTE = (
@@ -112,6 +136,17 @@ _SHORTLIST_NOTE = (
     "matches can be incidental: select an article only if it actually documents "
     "the feature or workflow this change note describes, judged by its title, "
     "category and excerpt together.\n\n"
+)
+
+# Prepended when the shortlist holds swept articles (entries marked
+# "about: <type>"; see CONTENT_TYPES).
+_SWEEP_NOTE = (
+    "Entries marked `about: <content type>` are in the list because their title or category "
+    "is about a content type this change affects, not because of a keyword match. Judge each "
+    "against the change: select it if it describes anything the change alters (where the "
+    "content type is found, how it's created, edited, copied, published, deleted or managed, "
+    "or the old wording), even if only in passing. Leave it out only if it plainly can't be "
+    "affected. The excerpt is the passage closest to the change's wording.\n\n"
 )
 
 # Document360 splits content into entirely separate project versions
@@ -128,8 +163,7 @@ _SHORTLIST_NOTE = (
 # workspaces, which also refuses anything outside them (Archived included).
 DEFAULT_PRODUCT_LINE = "DAP for Web"
 
-# One schema for both providers: Claude gets it as --json-schema, Gemini as
-# the parameters of its forced `report_candidates` function call.
+# Passed to Claude as --json-schema.
 CANDIDATES_SCHEMA = {
     "type": "object",
     "properties": {
@@ -155,7 +189,7 @@ CANDIDATES_SCHEMA = {
 
 
 def _load_prompt(product_lines=None, include_products=True):
-    """kb_search_prompt.md plus, when `include_products`, the reference
+    """prompts/kb_search.md plus, when `include_products`, the reference
     files for `product_lines` (a list; None or [] means DAP for Web's)."""
     with open(PROMPT_PATH) as f:
         parts = [f.read()]
@@ -245,12 +279,14 @@ def fetch_kb_articles(client=None, project_version_id=None, product_line=DEFAULT
 
 def _listing_line(a):
     """`[id] title (category path)` — the "titles" mode format, byte for
-    byte. A shortlist entry from "index" mode also carries `workspace` and
-    `snippet`, which are added only when present."""
+    byte. A shortlist entry from "index" mode also carries `workspace`,
+    `about` (a swept content type) and `snippet`, added only when present."""
     path = a["category_path"]
     if a.get("workspace"):
         path = f"{a['workspace']} > {path}"
     line = f"- [{a['id']}] {a['title']} ({path})"
+    if a.get("about"):
+        line += f"  about: {a['about']}"
     if a.get("snippet"):
         line += "\n    excerpt: " + " ".join(a["snippet"].split())
     return line
@@ -277,23 +313,9 @@ def _revision_block(revision):
     return "\n".join(lines)
 
 
-def triage(change_note, articles, shortlist=False, product_lines=None, include_products=True,
-           provider=claude_call.DEFAULT_PROVIDER, label="triage", revision=None, title_check=False,
-           model=None):
-    """One model call: given the full article list (titles only — no
-    content fetched yet), ask which are plausibly affected. Returns the
-    list of {article_id, title, reason} dicts the model reported.
-    `shortlist=True` marks `articles` as an "index" mode shortlist rather
-    than a whole workspace (see _SHORTLIST_NOTE). `product_lines` picks the
-    product reference files (default DAP for Web's); `include_products=False`
-    leaves them out. `provider` is "claude" (default, claude -p) or
-    "gemini" (fallback); both get the same system prompt, request and
-    schema. `label` names the call in the token report. `revision` adds
-    the writer's feedback on an earlier plan (see _revision_block).
-    `title_check=True` marks it as "both" mode's strict title recall check
-    (_TITLE_CHECK_NOTE). `model` overrides the Claude model (ignored for
-    Gemini)."""
-    listing = "\n".join(_listing_line(a) for a in articles)
+def note_block(change_note):
+    """The change note as the lines every discovery prompt starts with
+    (triage and agent discovery alike)."""
     note_lines = [
         "Change note:",
         f"- feature_area: {change_note.feature_area}",
@@ -321,80 +343,68 @@ def triage(change_note, articles, shortlist=False, product_lines=None, include_p
             "Explicitly UNAFFECTED (do not select an article just for covering one "
             "of these): " + ", ".join(change_note.unaffected_content_types)
         )
+    old_terms = _old_terms(change_note)
+    if old_terms:
+        note_lines.append(
+            "Old wording (what articles written before this change call the old state; an "
+            "article that still uses it is likely outdated): " + ", ".join(old_terms)
+        )
+    if getattr(change_note, "ui_facts", None):
+        note_lines.append("UI after the change (confirmed facts, including what stays the same):")
+        note_lines += [f"  - {f}" for f in change_note.ui_facts]
+    return note_lines
+
+
+def triage(change_note, articles, shortlist=False, product_lines=None, include_products=True,
+           label="triage", revision=None, title_check=False,
+           model=None):
+    """One model call: given the full article list (titles only — no
+    content fetched yet), ask which are plausibly affected. Returns the
+    list of {article_id, title, reason} dicts the model reported.
+    `shortlist=True` marks `articles` as an "index" mode shortlist rather
+    than a whole workspace (see _SHORTLIST_NOTE). `product_lines` picks the
+    product reference files (default DAP for Web's); `include_products=False`
+    leaves them out. `label` names the call in the token report. `revision` adds
+    the writer's feedback on an earlier plan (see _revision_block).
+    `title_check=True` marks it as "both" mode's strict title recall check
+    (_TITLE_CHECK_NOTE). `model` overrides the Claude model."""
+    listing = "\n".join(_listing_line(a) for a in articles)
+    note_lines = note_block(change_note)
     prompt = ("\n".join(note_lines) + _revision_block(revision)
               + f"\n\nKnowledge base articles ({len(articles)} total):\n{listing}")
     if shortlist:
         prompt = _SHORTLIST_NOTE + prompt
+        if any(a.get("about") for a in articles):
+            prompt = _SWEEP_NOTE + prompt
     if title_check:
         prompt = _TITLE_CHECK_NOTE + prompt
     system = _load_prompt(product_lines, include_products=include_products)
 
-    if provider == "claude":
-        result = claude_call.generate(
-            system=system, user=prompt, schema=CANDIDATES_SCHEMA, label=label,
-            model=model or claude_call.DEFAULT_MODEL, max_tokens=TRIAGE_MAX_OUTPUT_TOKENS,
-        )
-        return list(result.get("candidates", []))
-    if provider != "gemini":
-        raise ValueError(f"provider must be one of {claude_call.PROVIDERS}, got {provider!r}")
-    return _triage_gemini(system, prompt, label)
-
-
-def _triage_gemini(system, prompt, label="triage"):
-    """The Gemini fallback for triage(), unchanged from when Gemini was the
-    only provider. Imported lazily, so the Claude path never needs
-    google-genai installed."""
-    from google import genai
-    from google.genai import types
-
-    import gemini_call
-
-    candidates_function = types.FunctionDeclaration(
-        name="report_candidates",
-        description="Report which articles from the list are plausibly affected by this change.",
-        parameters=CANDIDATES_SCHEMA,
+    result = claude_call.generate(
+        system=system, user=prompt, schema=CANDIDATES_SCHEMA, label=label,
+        model=model or claude_call.DEFAULT_MODEL, max_tokens=TRIAGE_MAX_OUTPUT_TOKENS,
     )
-    gclient = genai.Client()  # reads GEMINI_API_KEY from the environment
-    config = types.GenerateContentConfig(
-        system_instruction=system,
-        # A real KB's title listing is large (734 articles ~= 40k prompt
-        # tokens in the first live test) and this model spends thousands
-        # of tokens "thinking" before answering — left at the assess.py
-        # default of 4096 total, thinking alone exhausted the budget
-        # before any function call was produced. Capping thinking and
-        # raising the ceiling fixed it; see README.md's "Live KB search"
-        # section for the full test record. Bumped again (2026-11-02)
-        # now that dap-core.md/dap-web.md are also in this prompt — this
-        # was already the largest, riskiest prompt in the pipeline for
-        # this exact failure mode, so the added context gets a bigger
-        # thinking allowance, not the same one stretched further.
-        max_output_tokens=TRIAGE_MAX_OUTPUT_TOKENS,
-        thinking_config=types.ThinkingConfig(thinking_budget=2048),
-        tools=[types.Tool(function_declarations=[candidates_function])],
-        tool_config=types.ToolConfig(
-            function_calling_config=types.FunctionCallingConfig(
-                mode="ANY",
-                allowed_function_names=["report_candidates"],
-            )
-        ),
-    )
+    return list(result.get("candidates", []))
 
-    response = gemini_call.generate(gclient, GEMINI_MODEL, prompt, config, label)
 
-    candidates_out = response.candidates or []
-    if not candidates_out or not getattr(candidates_out[0].content, "parts", None):
-        raise RuntimeError(f"Gemini returned no usable content. response={response!r}")
+def _type_key(name):
+    """"Pop-ups" / "Popups" / "pop up" -> "popup"; "Smart Tips" -> "smarttip"."""
+    key = re.sub(r"[^a-z]", "", (name or "").lower())
+    return key[:-1] if key.endswith("s") else key
 
-    function_call = next(
-        (p.function_call for p in candidates_out[0].content.parts if getattr(p, "function_call", None)),
-        None,
-    )
-    if function_call is None:
-        raise RuntimeError(
-            "Gemini did not return the expected function call — it may have answered in plain text instead."
-        )
 
-    return list(dict(function_call.args).get("candidates", []))
+def swept_types(change_note):
+    """The affected content types that get a sweep, as {display name: [search
+    names]}, in the change note's order. Anything not in CONTENT_TYPES
+    ("Dashboard", "Content tab") is left to the ranked search."""
+    names = list(change_note.affected_content_types or [])
+    names.extend(c.content_type for c in (change_note.changes or []))
+    out = {}
+    for name in names:
+        terms = CONTENT_TYPES.get(_type_key(name))
+        if terms and terms[0] not in out:
+            out[terms[0]] = terms
+    return out
 
 
 def _index_query(change_note):
@@ -404,8 +414,11 @@ def _index_query(change_note):
     affected-content-types list. Deliberately left out: `new` (a stale
     article doesn't contain the new wording yet), and `notes` plus
     `unaffected_content_types` — exclusion language like "Pop-ups did NOT
-    move" is exactly what once mined wrong keywords into discovery."""
+    move" is exactly what once mined wrong keywords into discovery.
+    The old terms (stated or suggested) are added: they are the words an
+    outdated article actually contains ("Widgets page")."""
     parts = [change_note.feature_area, change_note.summary]
+    parts.extend(_old_terms(change_note))
     if change_note.changes:
         for c in change_note.changes:
             parts.extend([c.content_type, c.old])
@@ -424,6 +437,11 @@ def _index_focus(change_note):
     names.extend(c.content_type for c in (change_note.changes or []))
     names.append(re.sub(r"[-_]+", " ", change_note.feature_area or ""))
     return [n for n in names if n and n.strip()]
+
+
+def _old_terms(change_note):
+    get = getattr(change_note, "all_old_terms", None)
+    return get() if get else []
 
 
 def index_available(db_path=kb_index.DEFAULT_DB_PATH):
@@ -451,13 +469,11 @@ def resolve_scope(change_note, product_lines=None, discovery=DEFAULT_DISCOVERY):
     return out
 
 
-def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB_PATH,
-                            provider=claude_call.DEFAULT_PROVIDER, revision=None):
-    """"index" mode: full-text search across the workspaces in `scope` (a
-    list of live workspace names; None means all six), balanced per
-    workspace, then one triage call over the shortlist. Same return shape as
-    find_candidates_live(): (article_ids, candidate_records, shortlist)."""
-    names = resolve_scope(change_note, scope, discovery="index") if scope else workspaces.names()
+def index_shortlist(change_note, names, db_path=kb_index.DEFAULT_DB_PATH, revision=None):
+    """The shortlist "index" mode hands triage (and agent mode hands its
+    agents as the must-review list): the content-type sweep, the ranked
+    full-text hits and, on a re-plan, the feedback's own matches. Local
+    search only, no model call. `names` is a list of live workspace names."""
     st = kb_index.status(db_path)
     if st.get("age_hours", 0) > INDEX_STALE_AFTER_HOURS:
         print(f"    (knowledge index is {st['age_hours']:.0f}h old, built {st['built_at']}; "
@@ -466,10 +482,16 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
     query = _index_query(change_note)
     focus = _index_focus(change_note)
 
+    # The per-workspace cap only balances workspaces against each other, so
+    # a single-workspace ticket gets the whole shortlist: on a DAP for Web
+    # Launchers ticket the cap of 12 left out most of the 103 articles
+    # that mention Launchers (2026-11-09).
+    per_workspace = INDEX_PER_WORKSPACE if len(names) > 1 else INDEX_SHORTLIST_MAX
+
     def run(focus):
         hits = []
         for name in names:
-            hits.extend(kb_index.search(query, k=INDEX_PER_WORKSPACE, workspace=name, db_path=db_path, focus=focus))
+            hits.extend(kb_index.search(query, k=per_workspace, workspace=name, db_path=db_path, focus=focus))
         return hits
 
     hits = run(focus)
@@ -493,14 +515,36 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
         direct = kb_index.search(query, k=INDEX_RARE_FEATURE_MAX, workspace=names, db_path=db_path, focus=[feature])
         direct_ids = {h["article_id"] for h in direct}
         hits = direct + [h for h in hits if h["article_id"] not in direct_ids]
-    shortlist = [{
-        "id": h["article_id"],
-        "title": h["title"],
-        "category_path": h["category_path"],
-        "workspace": h["workspace"],
-        "version_id": h["version_id"],
-        "snippet": h["snippet"],
-    } for h in hits[:INDEX_SHORTLIST_MAX]]
+
+    def entry(h, about=None):
+        e = {"id": h["article_id"], "title": h["title"], "category_path": h["category_path"],
+             "workspace": h["workspace"], "version_id": h["version_id"], "snippet": h["snippet"]}
+        if about:
+            e["about"] = about
+        return e
+
+    # The content-type sweep goes first (see CONTENT_TYPES), then the ranked
+    # body search fills its own INDEX_SHORTLIST_MAX slots on top of it.
+    # SWEEP_MAX is shared fairly: each type may use an equal part of what's
+    # left, so on a Flows + Smart Tips ticket Flows (~190) can't take it all.
+    shortlist, have = [], set()
+    types = list(swept_types(change_note).items())
+    for i, (display, terms) in enumerate(types):
+        budget = (SWEEP_MAX - len(shortlist)) // (len(types) - i)
+        total = kb_index.count_about(terms, names, db_path)
+        swept = kb_index.about(terms, query, workspace=names, k=budget + len(have), db_path=db_path)
+        added = 0
+        for h in swept:
+            if added >= budget:
+                break
+            if h["article_id"] not in have:
+                have.add(h["article_id"])
+                shortlist.append({**entry(h, about=display), "about_total": total})
+                added += 1
+        print(f"    (sweep: {added} of {total} article(s) about {display} shortlisted)")
+    ranked = [h for h in hits if h["article_id"] not in have][:INDEX_SHORTLIST_MAX]
+    have.update(h["article_id"] for h in ranked)
+    shortlist += [entry(h) for h in ranked]
 
     # A re-plan can ask for articles the first search never shortlisted
     # ("also include Task List articles"); triage can only pick from what
@@ -510,7 +554,6 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
     # notes") may add an article back here, which is harmless: the model is
     # told to apply the feedback, and only what it selects is kept.
     if revision and revision.get("feedback"):
-        have = {a["id"] for a in shortlist}
         extra = [h for h in kb_index.search(revision["feedback"], k=INDEX_FEEDBACK_EXTRA * 2, workspace=names,
                                             db_path=db_path)
                  if h["article_id"] not in have][:INDEX_FEEDBACK_EXTRA]
@@ -520,18 +563,49 @@ def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB
         } for h in extra]
         if extra:
             print(f"    (re-plan: added {len(extra)} article(s) matching the writer's feedback to the shortlist)")
+    return shortlist
+
+
+def find_candidates_indexed(change_note, scope=None, db_path=kb_index.DEFAULT_DB_PATH,
+                            revision=None):
+    """"index" mode: full-text search across the workspaces in `scope` (a
+    list of live workspace names; None means all six), balanced per
+    workspace, then one triage call over the shortlist. Same return shape as
+    find_candidates_live(): (article_ids, candidate_records, shortlist)."""
+    names = resolve_scope(change_note, scope, discovery="index") if scope else workspaces.names()
+    shortlist = index_shortlist(change_note, names, db_path=db_path, revision=revision)
     if not shortlist:
         return [], [], []
 
-    product_lines = _index_product_lines(names)
-    found = triage(change_note, shortlist, shortlist=True, product_lines=product_lines,
-                   include_products=product_lines is not None, provider=provider, revision=revision)
-    kept = _with_workspace(_only_shown(found, shortlist), shortlist)
+    kept = triage_shortlist(change_note, shortlist, names, revision=revision)
     return [c["article_id"] for c in kept], kept, shortlist
 
 
-def find_candidates_titles(change_note, scope, client=None, provider=claude_call.DEFAULT_PROVIDER,
-                           revision=None, title_check=False, model=None):
+def triage_shortlist(change_note, shortlist, names, revision=None,
+                     label="triage"):
+    """Index-mode triage over a shortlist, in TRIAGE_BATCH batches: the
+    candidate records the model picked (only ids it was shown), each with
+    its workspace, deduplicated. `names` are the workspaces searched, which
+    pick the product reference files. Also agent mode's fallback for a
+    workspace whose agent run failed (discovery_agent.py)."""
+    product_lines = _index_product_lines(names)
+    found = []
+    batches = [shortlist[i:i + TRIAGE_BATCH] for i in range(0, len(shortlist), TRIAGE_BATCH)]
+    for i, batch in enumerate(batches, 1):
+        label_i = label if len(batches) == 1 else f"{label} {i}/{len(batches)}"
+        picked = triage(change_note, batch, shortlist=True, product_lines=product_lines,
+                        include_products=product_lines is not None, revision=revision,
+                        label=label_i)
+        found.extend(_only_shown(picked, batch))
+    seen, kept = set(), []
+    for c in _with_workspace(found, shortlist):
+        if c["article_id"] not in seen:
+            seen.add(c["article_id"])
+            kept.append(c)
+    return kept
+
+
+def find_candidates_titles(change_note, scope, client=None, revision=None, title_check=False, model=None):
     """"titles" mode: for EACH workspace in `scope`, walk its full title
     list and triage it in its own call, with that workspace's product
     reference files. One call per workspace, not one merged listing: DAP
@@ -547,7 +621,7 @@ def find_candidates_titles(change_note, scope, client=None, provider=claude_call
             a["workspace"] = name
         print(f"    ({name}: {len(articles)} article title(s) to triage)", flush=True)
         label = ("title check" if title_check else "triage") + ("" if len(scope) == 1 else f" {name}")
-        picked = _only_shown(triage(change_note, articles, product_lines=[name], provider=provider,
+        picked = _only_shown(triage(change_note, articles, product_lines=[name],
                                     label=label, revision=revision, title_check=title_check,
                                     model=model), articles)
         found.extend(_with_workspace(picked, articles))
@@ -577,8 +651,7 @@ def _with_workspace(found, shown_articles):
 FOUND_BY_ORDER = {"both": 0, "index": 1, "titles": 2}
 
 
-def find_candidates_both(change_note, product_lines=None, client=None, provider=claude_call.DEFAULT_PROVIDER,
-                         revision=None):
+def find_candidates_both(change_note, product_lines=None, client=None, revision=None):
     """"both" mode: the index pass (bodies, Sonnet) and an INDEPENDENT title
     pass per workspace (titles only, strict, TITLE_CHECK_MODEL), merged.
     Each candidate gets `found_by`: "both" when the two passes agree, else
@@ -588,10 +661,10 @@ def find_candidates_both(change_note, product_lines=None, client=None, provider=
     so "both" really is two methods agreeing. Returns (article_ids,
     candidate_records, scanned), with scanned = shortlist + every title."""
     _, index_found, shortlist = find_candidates_indexed(
-        change_note, scope=resolve_scope(change_note, product_lines, "index"), provider=provider, revision=revision,
+        change_note, scope=resolve_scope(change_note, product_lines, "index"), revision=revision,
     )
     _, title_found, titles = find_candidates_titles(
-        change_note, resolve_scope(change_note, product_lines, "titles"), client=client, provider=provider,
+        change_note, resolve_scope(change_note, product_lines, "titles"), client=client,
         revision=revision, title_check=True, model=TITLE_CHECK_MODEL,
     )
     title_ids = {c["article_id"] for c in title_found}
@@ -606,7 +679,7 @@ def find_candidates_both(change_note, product_lines=None, client=None, provider=
 
 
 def find_candidates_live(change_note, client=None, product_lines=None, discovery=DEFAULT_DISCOVERY,
-                         provider=claude_call.DEFAULT_PROVIDER, revision=None):
+                         revision=None, agent_budget=None):
     """Discovery entry point used by pipeline.py's automatic KB fallback.
     Returns (article_ids, full_candidate_records, all_articles_scanned);
     each candidate record carries its `workspace`.
@@ -620,25 +693,32 @@ def find_candidates_live(change_note, client=None, product_lines=None, discovery
     scope, then one triage call over the shortlist; falls back to "titles"
     when no index has been built. discovery="both": both, merged, each
     candidate marked `found_by` (see find_candidates_both); falls back to
-    "titles" with no index. `provider` picks the triage model:
-    "claude" (default) or "gemini". `revision` carries a writer's feedback
+    "titles" with no index. `revision` carries a writer's feedback
     on an earlier plan into the triage call (re-plan)."""
     if discovery not in DISCOVERY_MODES:
         raise ValueError(f"discovery must be one of {DISCOVERY_MODES}, got {discovery!r}")
+    if discovery == "agent":
+        if index_available():
+            import discovery_agent  # imports this module; imported here to avoid a cycle
+            return discovery_agent.find_candidates_agent(
+                change_note, resolve_scope(change_note, product_lines, "index"), revision=revision,
+                **({"budget_usd": agent_budget} if agent_budget else {}))
+        print("    (no knowledge index built yet — 'agent' needs it for the copy and the must-review list; "
+              "falling back to title-only discovery. Build one with: python3 doc_sync/kb_index.py build)")
     if discovery == "both":
         if index_available():
-            return find_candidates_both(change_note, product_lines, client=client, provider=provider,
+            return find_candidates_both(change_note, product_lines, client=client,
                                         revision=revision)
         print("    (no knowledge index built yet — 'both' runs as title-only discovery; "
               "build one with: python3 doc_sync/kb_index.py build)")
     if discovery == "index":
         if index_available():
             return find_candidates_indexed(change_note, scope=resolve_scope(change_note, product_lines, "index"),
-                                           provider=provider, revision=revision)
+                                           revision=revision)
         print("    (no knowledge index built yet — falling back to title-only discovery; "
               "build one with: python3 doc_sync/kb_index.py build)")
     scope = resolve_scope(change_note, product_lines, "titles")
-    return find_candidates_titles(change_note, scope, client=client, provider=provider, revision=revision)
+    return find_candidates_titles(change_note, scope, client=client, revision=revision)
 
 
 def parse_product_lines(text):
@@ -662,9 +742,6 @@ def main():
                               "call per workspace. 'index': search article bodies in scope with the "
                               "local knowledge index, then triage that shortlist. 'both': index plus "
                               "a strict title check on Haiku, merged with found_by.")
-    parser.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER,
-                         help="Model for the triage call: 'claude' (default, claude -p on your Claude "
-                              "Code login) or 'gemini' (fallback, needs GEMINI_API_KEY).")
     args = parser.parse_args()
 
     change_note = load_change_note(args.change_note_path)
@@ -674,8 +751,7 @@ def main():
     print(f"Discovery: {mode}, scope: {', '.join(scope)}")
 
     t0 = time.time()
-    _, found, scanned = find_candidates_live(change_note, product_lines=override, discovery=args.discovery,
-                                             provider=args.provider)
+    _, found, scanned = find_candidates_live(change_note, product_lines=override, discovery=args.discovery)
     print(f"  {'Shortlisted' if mode == 'index' else 'Scanned'} {len(scanned)} article(s). "
           f"Total: {time.time() - t0:.1f}s.\n")
 

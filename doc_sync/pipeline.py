@@ -6,11 +6,10 @@ change-note file and for the mock archive.
 
 Current defaults, as of this standing decision — not a fallback, the
 actual setup until told otherwise:
-  - Claude is the DEFAULT provider for triage and assessment, called
-    through `claude -p` on the writer's Claude Code login (claude_call.py,
-    assess.py) — no ANTHROPIC_API_KEY needed. Gemini (assess_gemini.py,
-    gemini_call.py) is kept as a fallback: pass --provider gemini.
-    (2026-11-06; Gemini was the default before.)
+  - Claude runs triage and assessment, called through `claude -p` on the
+    writer's Claude Code login (claude_call.py, assess.py) — no
+    ANTHROPIC_API_KEY needed. It is the only model provider: the Gemini
+    fallback was removed on 2026-11-15.
   - The local mock archive (mock_d360.py) is the default write target,
     since this environment's writes to the real Document360 API are
     blocked regardless of --live. Discovery and assessment reads can
@@ -36,7 +35,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))  # d360_client.py lives in ../core
 
 import candidates
-import claude_call
 import draft_writer
 import mock_d360
 import review_queue
@@ -45,19 +43,12 @@ from change_note import load_change_note
 from d360_client import Document360Client
 
 
-def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, product_lines=None,
+def run(change_note_path, live=False, product_lines=None,
         only_ids=None, limit=None, discovery="titles"):
     """`product_lines` (a list of live workspace names) overrides the change
     note's own product lines as the discovery scope; see
     kb_search.resolve_scope()."""
-    # Imported here, not at module level, so the default "claude" path
-    # never requires google-genai to be installed.
-    if provider == "gemini":
-        from assess_gemini import assess_article
-    elif provider == "claude":
-        from assess import assess_article
-    else:
-        raise ValueError(f"provider must be one of {claude_call.PROVIDERS}, got {provider!r}")
+    from assess import assess_article
 
     change_note = load_change_note(change_note_path)
 
@@ -93,7 +84,7 @@ def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, pro
             mode = discovery if (discovery == "titles" or kb_search.index_available()) else "titles"
             scope = kb_search.resolve_scope(change_note, product_lines, "titles" if mode == "titles" else "index")
             article_ids, found, scanned = kb_search.find_candidates_live(
-                change_note, product_lines=product_lines, discovery=discovery, provider=provider,
+                change_note, product_lines=product_lines, discovery=discovery,
             )
             print(f"No tag_map entry for feature_area={change_note.feature_area!r} — ran a live KB "
                   f"search ({mode}) in {', '.join(scope)}: scanned "
@@ -119,11 +110,11 @@ def run(change_note_path, live=False, provider=claude_call.DEFAULT_PROVIDER, pro
 
     for article_id in article_ids:
         print(f"\nAssessing {article_id}...")
-        # A bad response from either provider, or a write failure on one
+        # A bad model response, or a write failure on one
         # article, shouldn't abort the rest of the batch — each candidate
         # gets its own outcome, success or failure.
-        # Any exception, not just AssessmentError: a Gemini rate limit
-        # (429) or a failed Document360 read used to abort the whole run,
+        # Any exception, not just AssessmentError: a failed model call or
+        # Document360 read used to abort the whole run,
         # losing every result already gathered.
         try:
             assessment = assess_article(article_id, change_note, client=read_client)
@@ -206,9 +197,6 @@ def main():
     run_p.add_argument("--change-note", required=True, dest="path")
     run_p.add_argument("--live", action="store_true",
                         help="Use the real Document360 API instead of the local mock archive (default: mock)")
-    run_p.add_argument("--provider", choices=claude_call.PROVIDERS, default=claude_call.DEFAULT_PROVIDER,
-                        help="Model for triage and assessment: 'claude' (default — claude -p on your "
-                             "Claude Code login, no API key) or 'gemini' (fallback, needs GEMINI_API_KEY)")
     run_p.add_argument("--product-lines", "--product-line", dest="product_lines", default=None,
                         help="Comma-separated live workspaces to search (e.g. 'DAP for Web, DAP for "
                              "Desktop'), overriding the change note's own product_lines. Default: "
@@ -237,7 +225,7 @@ def main():
     if args.command == "run":
         import kb_search
         only_ids = [a.strip() for a in args.only.split(",")] if args.only else None
-        run(args.path, live=args.live, provider=args.provider,
+        run(args.path, live=args.live,
             product_lines=kb_search.parse_product_lines(args.product_lines), only_ids=only_ids,
             limit=args.limit, discovery=args.discovery)
     elif args.command == "review":

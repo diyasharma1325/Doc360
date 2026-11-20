@@ -1,0 +1,17 @@
+{
+  "feature_area": "Display Names",
+  "summary": "Whatfix lets users add a display name to content apart from the Title.",
+  "old": "While creating content only the Title (Content Name) could be added.",
+  "new": "Now apart from the content name, we can also add Display names to Whatfix content. This Display name will be visible to the end users in task lists, self help widgets and while exporting content types.",
+  "effective_date": "",
+  "notes": "",
+  "product_line": "",
+  "affected_content_types": [
+    "Flows",
+    "Smart Tips",
+    "Beacons",
+    "Popups"
+  ],
+  "unaffected_content_types": [],
+  "changes": []
+}
