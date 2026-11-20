@@ -90,6 +90,12 @@ $P doc_sync/ticket_run.py intake <name>
 - Show the "old wording" comment as recorded. When the terms are **suggested**, ask
   the writer to confirm or correct them. A correction goes in on the plan step:
   `$P doc_sync/ticket_run.py replan <name> --old-terms "<term 1>, <term 2>"`.
+- Show the "UI facts" comment as recorded: what the UI looks like **after** the change,
+  including what stays the same. Screenshots are judged against these, so ask the
+  writer to confirm or correct them, especially what stays (for example a menu entry
+  that remains for other content). A correction, or facts when the ticket gave none:
+  `$P doc_sync/ticket_run.py facts <name> "<fact 1>; <fact 2>"`. It can be run at any
+  point before phase 2, or in For review before the screenshots step.
 
 ## Step 3: Phase 1, the candidate plan (In Draft -> Peer review)
 
@@ -101,8 +107,9 @@ $P doc_sync/ticket_run.py phase1 <name> --discovery index   # quicker keyword se
 The default runs Claude agents that search and read a copy of the knowledge base, two
 runs per product line, within a per-ticket budget (`--agent-budget`, default $5).
 Takes one to three minutes; run it in the background. Each plan row has a
-**verdict** (affected, or possibly) and articles to **archive** rather than edit are
-marked. If the plan has a "full search didn't finish" note, tell the writer which
+**verdict** (affected, or possibly); articles to **archive** rather than edit are
+marked, and so are **screenshots only** articles, whose text is right but whose
+screenshots (read with OCR) still show the old UI. If the plan has a "full search didn't finish" note, tell the writer which
 product line fell back to the keyword search. Use `--discovery index` only if the
 writer asks for a quick search.
 
@@ -164,10 +171,50 @@ current title. Show the writer that list, say the content and title of each will
 overwritten with no undo, and get an explicit yes. Then run the same command with
 `--confirm-overwrite`. Live articles can't be written by any path.
 
-Phase 2 makes one model call per approved article and can take several minutes; run
-it in the background. When it finishes, show the "drafts ready" comment (the latest
+**Screenshots.** Phase 2 also checks every screenshot of each approved article against
+the change and its UI facts: **fine**, **to check** (it can't tell), or **to retake**
+with instructions. When another article already has a screenshot of the same screen in
+the new UI, it is put straight into the draft (**replaced from another article**); the
+writer confirms each one. Screenshots-only articles skip the text check, and get a
+draft only if a screenshot was replaced. `--no-screenshots` skips the check for the
+others.
+
+Phase 2 makes one or more model calls per approved article (text, then screenshots)
+and can take several minutes; run it in the background. When it finishes, show the "drafts ready" comment (the latest
 `comment-NN.txt`) as recorded. If any article **failed**, running phase 2 again
 retries only those.
+
+## Step 5b: Screenshots (For review)
+
+The "drafts ready" comment's **Screenshots** section lists, per article, what to do:
+
+- **To retake**: the writer saves each new screenshot as a PNG at the path shown,
+  `doc_sync/runs/<name>/screenshots/<plan #>/<image #>.png` (e.g. `screenshots/3/010.png`).
+  The I2P extension's **Free Capture**, then **Download all**, gives the house frame.
+- **To check**: the writer looks in the product; if it's fine, `--fine 3:12`.
+- **Replaced from another article**: to undo one, `--reject 3:1` (it becomes a retake).
+
+First check the saved retakes without uploading or writing anything:
+
+```bash
+$P doc_sync/ticket_run.py screenshots <name> --check-only
+```
+
+Show the result. A retake the check doesn't accept says why; the writer retakes it.
+Then, once the writer agrees the accepted ones go up, run it for real:
+
+```bash
+$P doc_sync/ticket_run.py screenshots <name> [--fine "3:12"] [--reject "3:1"]
+```
+
+This uploads each accepted retake to Document360 Drive (the I2P agent's folder; it
+needs `D360_DRIVE_FOLDER_ID` and `D360_USER_ID` in `.env`), puts it in the draft, and writes
+the draft again: into the article's Archived draft when it has one, otherwise in the run
+folder. A screenshots-only article with no draft yet needs an Archived link
+(`--archived-targets "<link>"` plus `--confirm-overwrite`, confirmed as in phase 2) to
+get one there. A Drive upload adds a file and can't be undone from here, so get the
+writer's yes before the real run. Show the "screenshots updated" comment as recorded.
+Run it again as more retakes come in.
 
 ## Step 6: The artifact
 
@@ -186,7 +233,11 @@ file path again so the link stays the same.
 
 - `doc_sync/runs/<name>/`: the run (git-ignored). `ticket.json`, `attachments/`,
   `change_note.json`, `plan.json`, `approved.json`, `results.json`, `artifact.html`,
-  and `out/` with `jira_log.json`, `comment-NN.txt` and `articles/` (before/after HTML).
+  `screenshots/` (the writer's retakes) and `out/` with `jira_log.json`,
+  `comment-NN.txt`, `articles/` (before/after HTML) and `images/` (each article's
+  screenshots as reviewed, with `review.json`).
+- `doc_sync/data/screenshots.db`: the screenshot record (OCR text, verdicts, and the
+  images known to show each change's new UI, which replacements are drawn from).
 - `$P doc_sync/ticket_run.py show <name>`: status, plan, approval and phase 2 results
   at a glance.
 - `doc_sync/README.md`: how every stage works and why.

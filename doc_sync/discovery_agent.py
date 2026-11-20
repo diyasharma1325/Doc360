@@ -2,7 +2,9 @@
 Glob / Read tools searches a plain-text copy of each workspace in scope
 (kb_mirror.py), reads the articles it finds in full, and returns a verdict
 for each: affected, potentially affected or not affected, with an action
-(edit, archive, none) and a quoted line of evidence.
+(edit, archive, images, none) and a quoted line of evidence. "images"
+(2026-11-20) is an article whose text is right but whose screenshots, read
+from the copy's "Screenshot text" (OCR), still show the old UI.
 
 Why it exists: index-mode triage judges each shortlisted article from its
 title and a ~30-word excerpt, with no tools. On the Launchers answer key it
@@ -93,7 +95,7 @@ MAX_PARALLEL = 4
 AGENT_RUNS = 2
 
 VERDICTS = ("affected", "potentially_affected", "not_affected")
-ACTIONS = ("edit", "archive", "none")
+ACTIONS = ("edit", "archive", "images", "none")
 CANDIDATE_VERDICTS = ("affected", "potentially_affected")
 
 SCHEMA = {
@@ -238,6 +240,9 @@ def _merge(runs, seeds, workspace):
                 flagged[aid] = flagged.get(aid, 0) + 1
             if aid not in best or RANK[r["verdict"]] < RANK[best[aid]["verdict"]]:
                 best[aid] = r
+            elif (RANK[r["verdict"]] == RANK[best[aid]["verdict"]] and best[aid]["action"] == "images"
+                  and r["action"] == "edit"):
+                best[aid] = r  # one run found text to fix: an edit also checks the screenshots
     merged = [{**r, "runs_flagged": flagged.get(r["article_id"], 0), "runs": len(runs)} for r in best.values()]
     missing = [a for a in seeds if a["id"] not in best]
     if missing:
@@ -253,8 +258,9 @@ def _merge(runs, seeds, workspace):
     return merged
 
 
-ORDER = {("affected", "archive"): 0, ("affected", "edit"): 1, ("potentially_affected", "archive"): 2,
-         ("potentially_affected", "edit"): 3}
+ORDER = {("affected", "archive"): 0, ("affected", "edit"): 1, ("affected", "images"): 2,
+         ("potentially_affected", "archive"): 3, ("potentially_affected", "edit"): 4,
+         ("potentially_affected", "images"): 5}
 
 
 class _Spend:

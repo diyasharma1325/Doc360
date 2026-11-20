@@ -73,6 +73,14 @@ Extract:
   ticket or an attachment says about the old state; return an empty
   list if it doesn't say. Never guess here: a separate step suggests old
   terms for the writer to confirm when the ticket gives none.
+- **ui_facts**: short, plain statements of what the product's UI looks
+  like AFTER the change, as the ticket or an attachment states it: where
+  things now live, what each renamed or moved element is called now, and
+  what explicitly STAYS the same (e.g. "Smart Tips, Beacons, Launchers and
+  Blockers are listed under the Content tab in the Dashboard nav", "The
+  Widgets entry stays in the nav for Pop-ups, Self Help and Task List").
+  One fact per item. Screenshots are judged against these, so never guess:
+  return an empty list if the ticket doesn't say.
 - **notes**: caveats, exceptions, and anything ambiguous a human should
   double-check, including any conflict between the description and an
   attachment.

@@ -19,7 +19,11 @@ Fine for search; if agent mode earns its place, render the HTML to
 Markdown during `kb_index build` instead.
 
 Layout: data/kb_mirror/<workspace>/<category path>/<slug>.md, each file
-headed by its title, article id, version id, category path and URL.
+headed by its title, article id, version id, category path and URL. When
+the index has screenshot text (OCR, kb_index.py), it follows the article
+text under "## Screenshot text", one line per image with the image's
+number and the step it illustrates, so an agent can tell an article whose
+screenshots still show the old UI.
 The whole folder is replaced on every export (all or nothing, like the
 index), so an article removed from the index disappears from the copy.
 
@@ -75,7 +79,24 @@ def _reflow(body):
     return "\n".join(l.rstrip() for l in out)
 
 
-def render(row):
+def _screens_section(screens, images):
+    """The "## Screenshot text" block: "- Screenshot 3 (step: ...): <text>"."""
+    if not screens:
+        return ""
+    steps = {i["n"]: i["step_text"] for i in images or []}
+    lines = ["", "## Screenshot text", "",
+             "Text read from the article's screenshots (OCR; may contain reading errors):", ""]
+    for line in screens.split("\n"):
+        m = re.match(r"Screenshot (\d+): (.*)", line)
+        if not m:
+            continue
+        step = steps.get(int(m.group(1))) or ""
+        where = f" (step: {step[:160]})" if step else ""
+        lines.append(f"- Screenshot {m.group(1)}{where}: {m.group(2)}")
+    return "\n".join(lines) + "\n"
+
+
+def render(row, images=None):
     head = [
         f"# {row['title']}",
         "",
@@ -88,7 +109,8 @@ def render(row):
         "---",
         "",
     ]
-    return "\n".join(head) + _reflow(row["body"]) + "\n"
+    screens = row["screens"] if "screens" in row.keys() else ""
+    return "\n".join(head) + _reflow(row["body"]) + "\n" + _screens_section(screens, images)
 
 
 def export(db_path=kb_index.DEFAULT_DB_PATH, out_dir=DEFAULT_MIRROR_PATH):
@@ -96,11 +118,17 @@ def export(db_path=kb_index.DEFAULT_DB_PATH, out_dir=DEFAULT_MIRROR_PATH):
     if not st.get("exists") or "error" in st:
         raise SystemExit(f"No usable knowledge index at {db_path}: {st}. Build it first: python3 doc_sync/kb_index.py build")
 
+    screens_on = kb_index.has_screens(db_path)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    images = {}
     try:
         rows = conn.execute(
-            "SELECT title, category_path, body, article_id, version_id, workspace, url FROM articles").fetchall()
+            "SELECT title, category_path, body, article_id, version_id, workspace, url"
+            + (", screens" if screens_on else "") + " FROM articles").fetchall()
+        if screens_on:
+            for r in conn.execute("SELECT article_id, n, step_text FROM images"):
+                images.setdefault(r["article_id"], []).append({"n": r["n"], "step_text": r["step_text"]})
     finally:
         conn.close()
 
@@ -120,11 +148,13 @@ def export(db_path=kb_index.DEFAULT_DB_PATH, out_dir=DEFAULT_MIRROR_PATH):
             path = folder / f"{name}-{row['article_id'][:8]}.md"
         used.add(path)
         folder.mkdir(parents=True, exist_ok=True)
-        path.write_text(render(row), encoding="utf-8")
+        path.write_text(render(row, images.get(row["article_id"])), encoding="utf-8")
         manifest[row["article_id"]] = path.relative_to(tmp).as_posix()
 
-    info = {"index_built_at": st["built_at"], "articles": len(rows), "per_workspace": st["per_workspace"],
-            "body_includes": st["body_includes"], "headings_marked": False}
+    info = {"index_built_at": st["built_at"], "screens_updated_at": st.get("screens_updated_at"),
+            "articles": len(rows), "per_workspace": st["per_workspace"],
+            "body_includes": st["body_includes"], "screens_includes": st.get("screens_includes"),
+            "headings_marked": False}
     (tmp / MANIFEST_FILE).write_text(json.dumps(manifest, indent=0) + "\n", encoding="utf-8")
     (tmp / INFO_FILE).write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
 
@@ -144,7 +174,11 @@ def status(out_dir=DEFAULT_MIRROR_PATH, db_path=kb_index.DEFAULT_DB_PATH):
     except (OSError, ValueError) as exc:
         return {"exists": True, "error": f"{type(exc).__name__}: {exc}"}
     st = kb_index.status(db_path)
-    return {"exists": True, **info, "in_sync_with_index": st.get("built_at") == info.get("index_built_at")}
+    # Screenshot text can be filled in place after a build (screenshots.py ocr),
+    # so the copy is in sync only when it has both the build and that update.
+    in_sync = (st.get("built_at") == info.get("index_built_at")
+               and st.get("screens_updated_at") == info.get("screens_updated_at", st.get("screens_updated_at")))
+    return {"exists": True, **info, "in_sync_with_index": in_sync}
 
 
 def ensure_fresh(out_dir=DEFAULT_MIRROR_PATH, db_path=kb_index.DEFAULT_DB_PATH):

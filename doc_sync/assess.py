@@ -129,6 +129,9 @@ def _build_change_note_text(change_note, html_content, extra=None):
     else:
         lines.append(f"- old: {change_note.old}")
         lines.append(f"- new: {change_note.new}")
+    if getattr(change_note, "ui_facts", None):
+        lines.append("\nUI after the change (confirmed facts, including what stays the same):")
+        lines += [f"  - {f}" for f in change_note.ui_facts]
     if change_note.unaffected_content_types:
         lines.append(
             "\nExplicitly UNAFFECTED by this change (do not flag an article as "

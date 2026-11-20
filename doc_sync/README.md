@@ -23,7 +23,8 @@ built.
   for production.
 - **Live articles are only read.** Ticket runs save drafts in the run
   folder, or write them into Archived scratch articles the writer lists
-  (`archived_writer.py`, built but not used live yet). `pipeline.py run`
+  (`archived_writer.py`; tested live end to end on 2026-11-11, run
+  `ai-popups-e2e`). `pipeline.py run`
   writes to the local mock archive (`mock_d360.py`) unless `--live`.
 - **Six live workspaces are in scope** for discovery and assessment
   (`core/workspaces.py`): DAP for Web, DAP for Desktop, DAP on OS, DAP for
@@ -66,6 +67,10 @@ Python modules sit directly in `doc_sync/`, so every command is `python doc_sync
 | `product_context.py` | 2-3 | Picks which product reference files a prompt carries, by product line — the article's own workspace first, then the change note's `product_line`, then DAP for Web |
 | `product_reference/`: `dap-core.md`, `dap-web.md`, `dap-desktop.md`, `dap-os.md`, `dap-mobile.md`, `product-analytics.md`, `mirror.md` | 2-3 (reference) | Product reference files: concepts, terminology, and a fixed snapshot of each workspace's category structure. The four `dap-*` surface files are deltas on `dap-core.md` and always load with it |
 | `draft_writer.py` | 4 | Only file that writes to Document360. Checks for an existing draft FIRST, then forks the article into a new draft version and writes into that; never publishes |
+| `screenshots.py` | 2-4 | Images in article HTML (position, path, alt, step text), downloads with an overall deadline, GIFs tiled into one sheet, Tesseract OCR, the one-attribute `src` swap, upload checks (PNG, 10 MB, 40 MP), and the screenshot record `data/screenshots.db` (OCR cache, verdicts, images known to show a change's new UI). `ocr --workspace` fills OCR into the index in place (see "Screenshots") |
+| `image_review.py` | 4 | Phase 2's vision calls: review an article's screenshots, compare a stale one with replacement candidates, check a writer's retakes (see "Screenshots") |
+| `screenshot_step.py` | 4 | The screenshot review inside phase 2, the comment section that reports it, and the `screenshots` step that brings in retakes |
+| `d360_drive.py` | 4 | Uploads a retake to Document360 Drive (the I2P agent's folder and contract) |
 | `verify.py` | 4 | Cheap post-write checks, shown to the reviewer before they decide: old wording that was in the article word for word is gone, HTML intact, no big shrink, no images lost. (No "new text present" check since 2026-11-06: a change note's `new` is a summary sentence, so it fired on nearly every draft) |
 | `review_queue.py` | 5 | JSON-backed pending/approved/rejected/merge_conflict queue |
 | `claude_call.py` | 2-3 | Every Claude call goes through here: `claude -p` with `--json-schema` structured output, run from a temp folder outside the repo (so no `CLAUDE.md` is loaded) with `ANTHROPIC_API_KEY` stripped; retries, a per-call report, a call log (`data/model_calls.jsonl`) and the shared local response cache. `python3 doc_sync/claude_call.py selftest` checks it works |
@@ -86,12 +91,19 @@ the macOS system Python has none of these packages, so it fails on the
 first import. The commands below write `python3` for brevity.
 
 Requires everything already in `.env` (`D360_API_KEY`, `D360_PROJECT_ID`,
-`D360_FOLDER_ID`, `D360_USER_ID`), plus the `claude` CLI installed and
-logged in (`python3 doc_sync/claude_call.py selftest` should answer).
-`ANTHROPIC_API_KEY` is never
+`D360_FOLDER_ID`, `D360_USER_ID`, and for screenshot uploads
+`D360_DRIVE_FOLDER_ID` and `D360_DRIVE_PROJECT_ID`), plus the `claude`
+CLI installed and logged in (`python3 doc_sync/claude_call.py selftest`
+should answer). `ANTHROPIC_API_KEY` is never
 needed, and is stripped from `claude -p`'s environment if set, so calls
 always run on the Claude Code login. `beautifulsoup4` (in
 `requirements.txt`) is needed only to build the knowledge index.
+
+Screenshot handling also needs **Tesseract** (`brew install tesseract`)
+for OCR during the index build and phase 2's screenshot review. Pillow (in
+`requirements.txt`) decodes the images. Without Tesseract the index
+builds without screenshot text and phase 2 still reviews screenshots,
+but OCR-based matching is skipped.
 
 All commands below assume you're running from the repo root (`Doc360/`),
 same as `core/cli.py` and `core/discover.py` — `doc_sync/assess.py` and
@@ -115,7 +127,10 @@ python3 doc_sync/ticket_run.py replan  dap-display-names "Drop 2; also check Tas
 python3 doc_sync/ticket_run.py approve dap-display-names "1, 3-5"       # Peer review -> For review
 python3 doc_sync/ticket_run.py phase2  dap-display-names               # drafts saved in the run folder
 python3 doc_sync/ticket_run.py phase2  dap-display-names \
-    --archived-targets "<archived link 1>, <archived link 2>, ..." --confirm-overwrite   # (not used yet)
+    --archived-targets "<archived link 1>, <archived link 2>, ..." --confirm-overwrite
+python3 doc_sync/ticket_run.py facts   dap-display-names "<fact>; <fact>"   # UI facts screenshots are judged against
+python3 doc_sync/ticket_run.py screenshots dap-display-names --check-only   # check the writer's retakes
+python3 doc_sync/ticket_run.py screenshots dap-display-names [--fine 3:12] [--reject 3:1]   # upload + put in the draft
 python3 doc_sync/ticket_run.py show    dap-display-names               # status, plan, approval
 python3 doc_sync/ticket.py show dap-display-names                      # ticket + every recorded event
 ```
@@ -586,8 +601,9 @@ the alt text of each image, where the image sits (a bare file name or a
 generic "image" is skipped). Screenshots carry much of an article's
 context ("Customize a Launcher": 11 images, 335 words, and "Dashboard"
 only in its screenshots); alt text is the free part of that. Text INSIDE
-screenshots (OCR) and semantic search are planned next. `status` shows
-`body_includes`; an index built before this says "text".
+screenshots is read too since 2026-11-20 (OCR, see "Screenshots"); semantic
+search is still planned. `status` shows `body_includes` and
+`screens_includes`; an index built before either says "text" / "none".
 
 **Recall benchmark** (`eval_recall.py`, 2026-11-09). Answer keys in
 `eval/keys/` list the articles a change really affects, confirmed by a
@@ -654,20 +670,79 @@ workspace (read off the live article), else the change note's
 built exactly as before this existed. The content maps inside these
 files are fixed snapshots; the knowledge index is the up-to-date source.
 
+## Screenshots (2026-11-20)
+
+Outdated screenshots are found, replaced and reviewed the same way as text.
+The plan (writer decision 2026-11-19): **the writer captures, the pipeline
+does the rest**. Automated capture (Playwright) is deferred.
+
+1. **Finding them.** The index records every article's images and the
+   text Tesseract reads in them (`screens` column, `images` table; OCR
+   cached per image in `data/screenshots.db`, so only new images are read
+   on a rebuild). The KB copy lists it under "## Screenshot text" with
+   each image's number and step, so the discovery agent can mark an
+   article **screenshots only** (action `images`): text right, screenshots
+   showing the old UI. An OCR hit is a lead, never a verdict: in the
+   feasibility check "Widgets" was in 9 screenshots but only 2 were stale,
+   because the nav entry stays for other content.
+2. **UI facts.** The change note carries what the UI looks like after the
+   change, including what stays the same. Intake extracts them, the writer
+   confirms them (`facts`). Without them, two reviews of the same nav entry
+   disagreed about whether it was gone.
+3. **Judging them (phase 2).** Every screenshot of each approved article
+   goes to Claude (vision through the Read tool, in a temp folder outside
+   the repo) with the change note, UI facts, step text and alt text:
+   **fine**, **unsure** (to check in the product) or **stale** with retake
+   instructions. GIFs are sent as one sheet of 4 sampled frames. Calls take
+   8 images each and run in parallel (the model reads one image per turn).
+   Screenshots-only articles skip the text assessment.
+4. **Replacements.** For each stale screenshot, candidates come from the
+   images already known to show this change's new UI (a fine screenshot of
+   the changed area, a kept reuse, an uploaded retake) and from indexed
+   screenshots whose OCR text is close. One compare call decides:
+   **drop-in** (same screen, same element highlighted, new UI: the `src`
+   is swapped in the draft at once, the writer confirms or `--reject`s it),
+   **close** (a retake, with the candidate as a reference) or none.
+5. **Retakes (`screenshots` step).** The writer saves PNGs at
+   `runs/<run>/screenshots/<plan #>/<image #>.png` (the I2P extension's
+   Free Capture -> Download all gives the house frame; writer decision
+   2026-11-20: keep it, even beside older unframed screenshots). Each is
+   checked (PNG, 10 MB, 40 MP, then a vision check against the old one and
+   the retake instructions), uploaded to Document360 Drive
+   (`D360_DRIVE_FOLDER_ID`, `D360_USER_ID`), swapped in, and the draft is
+   written again. `--check-only` stops before any upload.
+
+**Swaps change only the `src` (and alt) of the image's own tag**, by path,
+so each tag keeps its width and settings and the rest of the article is
+untouched. `verify.py` checks every intended swap landed and doesn't count
+a swapped image as missing.
+
+**Image URLs.** Document360 signs image URLs for ~15 minutes and re-signs
+them on every read; the bare path returns 404. So images are identified by
+path without the query string, downloads use a src from a fresh read, and
+a swap writes the bare path, which Document360 signs on the next read
+(checked 2026-11-20 on a draft written 9 days before).
+
+**OCR without a rebuild:** `python3 doc_sync/screenshots.py ocr
+--workspace "DAP for Web"` re-reads one workspace's articles and fills the
+index in place (needs an index built after 2026-11-20).
+
 ## Not yet done
 
-- **The end-to-end test with Archived writes**: one ticket run through the
-  `doc-sync` skill, writing its drafts into Archived scratch articles, then
-  the artifact. Archived writes have so far been tested against a fake
-  client only (decision 2026-11-07).
-- **Compare discovery modes on more tickets.** Index became the ticket-run
-  default after one broad and one narrow ticket (2026-11-07); `both` is
-  there to check whether the title pass keeps finding real gaps.
+- **The retake leg, live.** Done 2026-11-20: the first index build with
+  OCR (2,752 articles, 29 minutes), a test upload to Document360 Drive,
+  and a full phase 2 with screenshot review on run `dap-uce-e2e`
+  (Archived drafts written, stale and unsure screenshots flagged). Not yet
+  run live: a writer's real retakes going through `screenshots` (check,
+  Drive upload, `src` swap, draft rewrite, read-back). The stubbed paths
+  pass.
+- **Compare discovery modes on more tickets.** Agent discovery is the
+  ticket-run default since 2026-11-10; `index` and `both` remain for
+  comparison.
 - **More answer keys.** The benchmark has one draft key; recall on one
   ticket says little. Each real ticket run whose plan a writer corrects
   is a key waiting to be written down.
-- **Text inside screenshots (OCR, tesseract) and semantic search**
-  (embeddings beside the keyword search), planned together.
+- **Semantic search** (embeddings beside the keyword search).
 - **Validate recall** against a known set of real articles in the
   correct workspaces (everything tested before 2026-10-29 was against the
   wrong one).

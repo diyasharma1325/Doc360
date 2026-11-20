@@ -9,6 +9,9 @@ __pycache__/
 # Local knowledge index built by doc_sync/kb_index.py - rebuildable, never committed
 doc_sync/data/knowledge.db
 doc_sync/data/knowledge.db.building
+# Screenshot record (doc_sync/screenshots.py): OCR cache, verdicts, images showing a change's new UI
+doc_sync/data/screenshots.db
+doc_sync/data/screenshots.db-*
 
 # Local model response cache (claude_call.py, DOC_SYNC_LLM_CACHE=1)
 doc_sync/data/llm_cache/

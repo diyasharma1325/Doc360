@@ -36,6 +36,14 @@ ticket_intake.py rather than being hand-typed):
     both. A Launchers ticket that never said "Widgets" searched only for
     "Content tab" and missed the articles still saying "Widgets".
 
+  - `ui_facts` (2026-11-20): plain statements of what the product's UI
+    looks like after the change, INCLUDING what stays the same ("The
+    Widgets entry stays in the Dashboard nav for Pop-ups, Self Help and
+    Task List"). Screenshot review judges and writes retake instructions
+    against these; without them it guessed, and two reviews of the same
+    nav entry disagreed (2026-11-19). Intake extracts them; the writer
+    confirms or replaces them (`ticket_run.py facts`).
+
 A change note with only the required fields still works everywhere;
 code that wants the richer structure checks whether these are populated
 and falls back to old/new/summary when they're not.
@@ -75,6 +83,8 @@ class ChangeNote:
     changes: List[ContentChange] = field(default_factory=list)
     old_terms: List[str] = field(default_factory=list)
     old_terms_suggested: List[str] = field(default_factory=list)
+    ui_facts: List[str] = field(default_factory=list)
+    ui_facts_source: str = ""  # "ticket" (intake) or "writer"
 
     def all_old_terms(self):
         """Stated old terms, then suggested ones, de-duplicated."""
@@ -115,6 +125,8 @@ def load_change_note(path):
         changes=[ContentChange(**c) for c in data.get("changes") or []],
         old_terms=list(data.get("old_terms") or []),
         old_terms_suggested=list(data.get("old_terms_suggested") or []),
+        ui_facts=list(data.get("ui_facts") or []),
+        ui_facts_source=data.get("ui_facts_source", ""),
     )
 
 
@@ -144,6 +156,8 @@ def scaffold(path):
         "changes": [],
         "old_terms": [],
         "old_terms_suggested": [],
+        "ui_facts": [],
+        "ui_facts_source": "",
     }
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:

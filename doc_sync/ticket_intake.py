@@ -111,12 +111,18 @@ INTAKE_SCHEMA = {
             "items": {"type": "string"},
             "description": "Names the ticket or an attachment gives for the old state. Empty if it gives none.",
         },
+        "ui_facts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "What the UI looks like after the change, including what stays the same, as the "
+                           "ticket or an attachment states it. Empty if it states nothing.",
+        },
         "notes": {"type": "string"},
     },
     "required": [
         "feature_area", "summary", "old", "new", "effective_date", "product_lines",
         "product_lines_quote", "predicted_product_lines", "prediction_basis", "affected_content_types", "unaffected_content_types",
-        "changes", "old_terms", "notes",
+        "changes", "old_terms", "ui_facts", "notes",
     ],
 }
 
@@ -226,6 +232,26 @@ def _old_terms_comment(stated, suggested, error=None):
         lines += ["", "I couldn't find any in the product reference either."]
     lines += ["", "To correct them, reply on the plan with the old terms, and the next re-plan "
               "searches for those instead."]
+    return "\n".join(lines)
+
+
+def ui_facts_comment(facts, revised=False):
+    """The UI facts as a comment for the writer to confirm: screenshot
+    review judges against them, so a wrong or missing one means a wrong
+    verdict or retake instruction."""
+    if revised:  # the writer's comment just before this one lists them
+        return f"Got it. Screenshots will be judged against the {len(facts)} UI facts above."
+    if facts:
+        lines = ["Here's what I understood the UI looks like **after** the change. Screenshots are judged "
+                 "against these facts, so please confirm or correct them, especially what **stays the "
+                 "same**:", ""]
+        lines += [f"- {f}" for f in facts]
+    else:
+        lines = ["The ticket doesn't say what the UI looks like **after** the change. Screenshots are "
+                 "judged against that, so without it the review has to guess, for example whether a menu "
+                 "entry is gone or still there for other content."]
+    lines += ["", "To correct or add facts, reply with them (one per line), including anything that "
+              "**stays the same**."]
     return "\n".join(lines)
 
 
@@ -349,6 +375,8 @@ def run_intake(run):
         unaffected_content_types=list(result.get("unaffected_content_types") or []),
         changes=[ContentChange(**c) for c in result.get("changes") or []],
         old_terms=_clean_terms(result.get("old_terms")),
+        ui_facts=[f.strip() for f in result.get("ui_facts") or [] if f and f.strip()],
+        ui_facts_source="ticket",
     )
     suggested, suggest_error = [], None
     if not note.old_terms:
@@ -361,6 +389,7 @@ def run_intake(run):
     if source == "predicted":
         ticket.record_comment(rd, _predicted_comment(product_lines, basis), label="product lines predicted")
     ticket.record_comment(rd, _old_terms_comment(note.old_terms, suggested, suggest_error), label="old wording")
+    ticket.record_comment(rd, ui_facts_comment(note.ui_facts), label="UI facts")
     ticket.record_event(rd, "intake", product_lines=product_lines, product_lines_source=source,
                         product_lines_basis=basis,
                         attachments_read=[a["name"] for a in attachments],

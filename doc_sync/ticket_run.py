@@ -6,8 +6,18 @@ the existing articles a change has made wrong.
     python3 doc_sync/ticket_run.py phase1  <run> [--discovery both]         # In Draft -> Peer review + plan
     python3 doc_sync/ticket_run.py replan  <run> "<feedback>" [--product-lines ...] [--old-terms "..."]
     python3 doc_sync/ticket_run.py approve <run> "1, 3, 5-7" | all          # Peer review -> For review
-    python3 doc_sync/ticket_run.py phase2  <run> [--archived-targets "<link>, ..." --confirm-overwrite]
+    python3 doc_sync/ticket_run.py phase2  <run> [--archived-targets "<link>, ..." --confirm-overwrite] [--no-screenshots]
+    python3 doc_sync/ticket_run.py facts   <run> "<fact>; <fact>"                 # replace the UI facts
+    python3 doc_sync/ticket_run.py screenshots <run> [--fine 3:12] [--reject 3:1] [--check-only] [--archived-targets ...]
     python3 doc_sync/ticket_run.py show    <run>
+
+- SCREENSHOTS (2026-11-20, screenshot_step.py): phase 2 also checks every
+  screenshot of each approved article against the change and its UI
+  facts. Stale ones are replaced in the draft from another article when a
+  drop-in exists, otherwise listed as retakes with instructions; "screenshots
+  only" articles (phase 1 action "images") skip the text assessment. The
+  `screenshots` step later takes the writer's retakes, checks and uploads
+  them, and writes the draft again.
 
 - PHASE 2 (For review) assesses each approved article against the change
   and, for one that needs an edit, saves its before/after HTML in
@@ -131,7 +141,8 @@ def plan_comment(tk, note, plan, revised=False):
             "**Verdict:** **affected** means the article says something the change makes wrong; "
             "**possibly** means it covers the feature but its text alone doesn't settle it. "
             "**Archive** marks an article whose main subject the change removes: it likely needs "
-            "archiving and a redirect, not an edit.",
+            "archiving and a redirect, not an edit. **Screenshots only** marks an article whose "
+            "text is right but whose screenshots still show the old UI.",
             "",
             "| # | Article | Workspace | Verdict | Why |",
             "|---|---|---|---|---|",
@@ -140,6 +151,8 @@ def plan_comment(tk, note, plan, revised=False):
             verdict = "affected" if c.get("verdict") == "affected" else "possibly"
             if c.get("action") == "archive":
                 verdict += ", **archive**"
+            elif c.get("action") == "images":
+                verdict += ", **screenshots only**"
             lines.append(f"| {c['n']} | {_cell(c['title'])} | {_cell(c.get('workspace'))} | {verdict} | "
                          f"{_cell(c.get('reason'))} |")
     elif both:
@@ -302,6 +315,29 @@ def set_old_terms(rd, terms):
     return note
 
 
+def set_ui_facts(run, facts):
+    """The writer's UI facts replace intake's in the saved change note, and
+    are recorded as the writer's comment with the agent's acknowledgement.
+    Allowed until phase 2 has run, and in For review before the screenshots
+    step (a later screenshot check uses them)."""
+    import ticket_intake
+
+    rd = ticket.run_dir(run)
+    tk = ticket.load_ticket(rd)
+    if tk.get("status") == ticket.TO_DO or not _path(rd, "change_note.json").exists():
+        raise StepRefused(f"{tk['key']} has no change note yet: run intake first.")
+    facts = [f.strip() for f in facts if f and f.strip()]
+    if not facts:
+        raise StepRefused("Give at least one UI fact.")
+    note = load_change_note(str(_path(rd, "change_note.json")))
+    note.ui_facts, note.ui_facts_source = facts, "writer"
+    save_change_note(note, str(_path(rd, "change_note.json")))
+    ticket.record_comment(rd, "\n".join(f"- {f}" for f in facts), label="UI facts", actor="writer")
+    ticket.record_comment(rd, ticket_intake.ui_facts_comment(facts, revised=True), label="UI facts confirmed")
+    ticket.record_event(rd, "ui_facts", actor="writer", ui_facts=facts)
+    return note
+
+
 def run_replan(run, feedback, product_lines=None, old_terms=None, agent_budget=None):
     """Re-plan from the writer's feedback; the ticket stays in Peer review.
     `old_terms` (a list) replaces the change note's old wording first."""
@@ -390,13 +426,15 @@ def approve(run, selection):
 # --- phase 2 -------------------------------------------------------------------
 
 # Outcomes that are final: a re-run of phase 2 skips these and retries the rest.
-DONE = ("draft_written", "draft_saved", "no_edit", "merge_conflict", "archive_recommended")
+DONE = ("draft_written", "draft_saved", "no_edit", "merge_conflict", "archive_recommended",
+        "screenshots_pending")
 
 RESULT_LABELS = {
     "archive_recommended": "Archive (recommended)",
     "draft_written": "Draft written",
     "draft_saved": "Draft saved locally",
     "no_edit": "No edit needed",
+    "screenshots_pending": "Screenshots to retake",
     "merge_conflict": "Needs a manual merge",
     "failed": "Failed",
 }
@@ -452,47 +490,90 @@ def _archives_of(results, approved):
     return out
 
 
-def _phase2_article(rd, note, a, client, assess, targets, used, archives=()):
-    """Assess one approved article and save or write its draft. Returns its
-    result record; never raises for a per-article problem. `archives`
-    (_archives_of) are articles being archived: if this one links to or
-    names one, its assessment is told to repoint that reference."""
+def screenshots_enabled():
+    """The screenshot check needs nothing but Claude (vision through the
+    Read tool) and Pillow; it can be switched off per run with
+    --no-screenshots or DOC_SYNC_SCREENSHOTS=0."""
+    import os
+    return os.environ.get("DOC_SYNC_SCREENSHOTS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _phase2_article(rd, note, a, client, assess, targets, used, archives=(), images=True, review_images=None):
+    """Assess one approved article, check its screenshots, and save or write
+    its draft. Returns its result record; never raises for a per-article
+    problem. `archives` (_archives_of) are articles being archived: if this
+    one links to or names one, its assessment is told to repoint that
+    reference. `images` False skips the screenshot check; a "screenshots
+    only" article (action "images") skips the text assessment instead.
+    `review_images` is for tests (screenshot_step.review_for_phase2)."""
     import archive_plan
     import draft_writer
     import verify
 
     base = {"n": a["n"], "article_id": a["article_id"], "title": a["title"], "workspace": a.get("workspace"),
             "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    images_only = a.get("action") == "images"
+    if images_only:
+        base["screenshots_only"] = True
+    refs, assessment = [], None
     try:
         live = client.get_article(a["article_id"])["data"]
         html = live.get("html_content") or ""
-        refs = [x for x in archives if x["url"] and (archive_plan.links_to(html, {"url": x["url"]})
-                                                     or archive_plan.mentions(html, x))]
-        if refs:
-            extra = "\n".join(archive_plan.repoint_instruction(x["title"], x["url"], x["redirect"]) for x in refs)
-            assessment = assess(a["article_id"], note, client=client, extra=extra)
-            base["repoints"] = [x["title"] for x in refs]
-        else:
-            assessment = assess(a["article_id"], note, client=client)
+        if not images_only:
+            refs = [x for x in archives if x["url"] and (archive_plan.links_to(html, {"url": x["url"]})
+                                                         or archive_plan.mentions(html, x))]
+            if refs:
+                extra = "\n".join(archive_plan.repoint_instruction(x["title"], x["url"], x["redirect"]) for x in refs)
+                assessment = assess(a["article_id"], note, client=client, extra=extra)
+                base["repoints"] = [x["title"] for x in refs]
+            else:
+                assessment = assess(a["article_id"], note, client=client)
     except Exception as exc:
         return {**base, "outcome": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
-    base.update(confidence=assessment.confidence, rationale=assessment.rationale)
-    if refs and assessment.updated_html_content:
-        still = [x["title"] for x in refs if archive_plan.links_to(assessment.updated_html_content, {"url": x["url"]})]
-        if still:
-            base["repoint_warnings"] = [f"the draft still links to \"{t}\", which is being archived" for t in still]
-    if not assessment.needs_edit:
-        return {**base, "outcome": "no_edit"}
-    if not assessment.updated_html_content:
-        return {**base, "outcome": "failed",
-                "error": "The model said the article needs an edit but returned no corrected HTML."}
+    if assessment:
+        base.update(confidence=assessment.confidence, rationale=assessment.rationale)
+        if refs and assessment.updated_html_content:
+            still = [x["title"] for x in refs
+                     if archive_plan.links_to(assessment.updated_html_content, {"url": x["url"]})]
+            if still:
+                base["repoint_warnings"] = [f"the draft still links to \"{t}\", which is being archived"
+                                            for t in still]
+        if assessment.needs_edit and not assessment.updated_html_content:
+            return {**base, "outcome": "failed",
+                    "error": "The model said the article needs an edit but returned no corrected HTML."}
+    else:
+        base["rationale"] = "Screenshots only: " + (a.get("reason") or "the text needs no edit.")
+    text_html = assessment.updated_html_content if assessment and assessment.needs_edit else None
 
     stem = f"{a['n']:02d}-{_slug(a['title'])}"
+    swaps = []
+    if images and (images_only or screenshots_enabled()):
+        import screenshot_step
+        try:
+            base["images"], swaps = (review_images or screenshot_step.review_for_phase2)(
+                rd, note, a, html, client, stem)
+        except Exception as exc:
+            base["images_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            if images_only:
+                return {**base, "outcome": "failed", "error": "The screenshot check failed: " + base["images_error"]}
+    if swaps:
+        import screenshot_step
+        final_html = screenshot_step.apply_swaps(text_html or html, swaps)
+    else:
+        final_html = text_html
+    if not final_html:
+        import screenshot_step
+        if screenshot_step.pending(base.get("images")):
+            return {**base, "outcome": "screenshots_pending"}
+        return {**base, "outcome": "no_edit"}
+
     articles_dir = rd / "out" / "articles"
     articles_dir.mkdir(parents=True, exist_ok=True)
-    (articles_dir / f"{stem}.before.html").write_text(assessment.original_html_content or "")
-    (articles_dir / f"{stem}.after.html").write_text(assessment.updated_html_content)
+    before_html = (assessment.original_html_content if assessment else "") or html
+    (articles_dir / f"{stem}.before.html").write_text(before_html)
+    (articles_dir / f"{stem}.after.html").write_text(final_html)
     files = {"before": f"articles/{stem}.before.html", "after": f"articles/{stem}.after.html"}
+    swap_map = {s["path"]: s["new_src"] for s in swaps}
 
     # The live article's own draft check, exactly as a live write will
     # need it: in-progress work in Document360 is never overwritten, even
@@ -502,8 +583,8 @@ def _phase2_article(rd, note, a, client, assess, targets, used, archives=()):
                 "note": "The live article already has an unpublished draft; merge the proposed edit by hand."}
 
     if targets is None:
-        check = verify.verify_article(a["article_id"], note, assessment.original_html_content,
-                                      client=_LocalHTML(assessment.updated_html_content))
+        check = verify.verify_article(a["article_id"], note, before_html, client=_LocalHTML(final_html),
+                                      swaps=swap_map)
         return {**base, **files, "outcome": "draft_saved",
                 "warnings": check.warnings + base.pop("repoint_warnings", [])}
 
@@ -511,9 +592,9 @@ def _phase2_article(rd, note, a, client, assess, targets, used, archives=()):
     if not free:
         return {**base, **files, "outcome": "failed", "error": "No Archived target left to write this draft into."}
     try:
-        link = targets.write(free[0], live.get("title") or a["title"], assessment.updated_html_content)
+        link = targets.write(free[0], live.get("title") or a["title"], final_html)
         used.append(free[0])
-        check = verify.verify_article(free[0], note, assessment.original_html_content, client=targets.client)
+        check = verify.verify_article(free[0], note, before_html, client=targets.client, swaps=swap_map)
     except Exception as exc:
         return {**base, **files, "outcome": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
     return {**base, **files, "outcome": "draft_written", "target_id": free[0], "target_link": link,
@@ -604,7 +685,9 @@ def phase2_comment(tk, results, approved):
                      f"{_cell(notes)} |")
     lines.append("")
     lines += _archive_section(rows)
-    if counts["draft_written"] or counts["draft_saved"]:
+    import screenshot_step
+    lines += screenshot_step.comment_section(rows)
+    if counts["draft_written"] or counts["draft_saved"] or counts["screenshots_pending"]:
         lines.append("**Next step:** review each draft against its live article before anything is published. "
                      "Nothing was published, and no live article was changed.")
     if counts["merge_conflict"]:
@@ -616,7 +699,7 @@ def phase2_comment(tk, results, approved):
 
 
 def run_phase2(run, archived_links=None, confirm_overwrite=False,
-               client=None, assess=None):
+               client=None, assess=None, images=True, review_images=None):
     """For review: assess each approved article, save or write its draft,
     record the final comment. The ticket stays in For review.
 
@@ -625,7 +708,8 @@ def run_phase2(run, archived_links=None, confirm_overwrite=False,
     in the run folder. With them, nothing is written unless
     `confirm_overwrite` is True: without it, every target is read, checked
     and NAMED, and the run stops, so the writer can confirm what will be
-    overwritten. `client` and `assess` are for tests."""
+    overwritten. `images` False skips the screenshot check.
+    `client`, `assess` and `review_images` are for tests."""
     rd = ticket.run_dir(run)
     tk = ticket.load_ticket(rd)
     _require_status(tk, ticket.FOR_REVIEW, "phase 2")
@@ -679,7 +763,8 @@ def run_phase2(run, archived_links=None, confirm_overwrite=False,
     archives = _archives_of(results, approved)
     for a in [a for a in todo if a.get("action") != "archive"]:
         print(f"\n  [{a['n']}] {a['title']} ({a.get('workspace')})", flush=True)
-        r = _phase2_article(rd, note, a, client, assess, targets, used, archives)
+        r = _phase2_article(rd, note, a, client, assess, targets, used, archives, images=images,
+                            review_images=review_images)
         print(f"      -> {RESULT_LABELS[r['outcome']]}" + (f": {r['error']}" if r.get("error") else ""), flush=True)
         results["articles"][a["article_id"]] = r
         results["targets_used"] = used
@@ -714,6 +799,12 @@ def show(run):
         for r in sorted(results.values(), key=lambda r: r["n"]):
             where = r.get("target_link") or r.get("after") or r.get("error") or ""
             print(f"  {r['n']:>3}. {RESULT_LABELS[r['outcome']]:<22} {r['title']}  {where}")
+            if r.get("images"):
+                items = r["images"]["items"]
+                c = {k: sum(1 for i in items if i["status"] == k)
+                     for k in ("reused", "replaced", "retake", "unsure", "kept")}
+                print("       screenshots: " + f"{r['images']['reviewed']} checked"
+                      + "".join(f", {v} {k}" for k, v in c.items() if v))
 
 
 def main():
@@ -753,6 +844,23 @@ def main():
     p.add_argument("--archived-targets", default=None,
                    help="Comma-separated Archived portal links to write the drafts into, one per approved "
                         "article. Without it, drafts are saved only in the run folder.")
+    p.add_argument("--confirm-overwrite", action="store_true",
+                   help="The writer has agreed the listed Archived articles may be overwritten")
+    p.add_argument("--no-screenshots", action="store_true",
+                   help="Don't check the articles' screenshots (screenshots-only articles are still checked)")
+
+    p = sub.add_parser("facts", help="Replace the UI facts screenshots are judged against")
+    p.add_argument("run")
+    p.add_argument("facts", help='The writer\'s facts, separated by ";" or new lines')
+
+    p = sub.add_parser("screenshots", help="For review: bring in retakes, keep or undo screenshots")
+    p.add_argument("run")
+    p.add_argument("--fine", default="", help='Screenshots the writer checked and keeps as they are, e.g. "3:12, 4:2"')
+    p.add_argument("--reject", default="", help='Reused screenshots to undo (they become retakes), e.g. "3:1"')
+    p.add_argument("--check-only", action="store_true",
+                   help="Check the saved retakes without uploading or writing anything")
+    p.add_argument("--archived-targets", default=None,
+                   help="Archived portal links for articles that have no Archived draft yet")
     p.add_argument("--confirm-overwrite", action="store_true",
                    help="The writer has agreed the listed Archived articles may be overwritten")
 
@@ -814,7 +922,26 @@ def _dispatch(args):
             print(f"  {a['n']}. {a['title']}  ({a.get('workspace')})")
     elif args.command == "phase2":
         links = [l.strip() for l in (args.archived_targets or "").split(",") if l.strip()]
-        run_phase2(args.run, links or None, args.confirm_overwrite)
+        run_phase2(args.run, links or None, args.confirm_overwrite, images=not args.no_screenshots)
+        show(args.run)
+    elif args.command == "facts":
+        note = set_ui_facts(args.run, re.split(r"[;\n]+", args.facts))
+        print("UI facts:\n" + "\n".join(f"  - {f}" for f in note.ui_facts))
+    elif args.command == "screenshots":
+        import screenshot_step
+        links = [l.strip() for l in (args.archived_targets or "").split(",") if l.strip()]
+        try:
+            summary = screenshot_step.run_screenshots(
+                args.run, fine=screenshot_step.parse_specs(args.fine),
+                reject=screenshot_step.parse_specs(args.reject), archived_links=links or None,
+                confirm_overwrite=args.confirm_overwrite, check_only=args.check_only)
+        except screenshot_step.ScreenshotsRefused as exc:
+            raise StepRefused(str(exc))
+        for n, done in sorted(summary.items()):
+            for line in done:
+                print(f"  #{n} {line}")
+        if not any(summary.values()):
+            print("Nothing to do: no retakes saved under screenshots/<plan #>/ and nothing marked.")
         show(args.run)
     else:
         show(args.run)

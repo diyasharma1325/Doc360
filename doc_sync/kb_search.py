@@ -349,6 +349,9 @@ def note_block(change_note):
             "Old wording (what articles written before this change call the old state; an "
             "article that still uses it is likely outdated): " + ", ".join(old_terms)
         )
+    if getattr(change_note, "ui_facts", None):
+        note_lines.append("UI after the change (confirmed facts, including what stays the same):")
+        note_lines += [f"  - {f}" for f in change_note.ui_facts]
     return note_lines
 
 

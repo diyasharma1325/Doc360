@@ -9,13 +9,20 @@ before/after HTML) and writes runs/<run>/artifact.html from
 templates/artifact.html: the ticket header, a details sidebar, the activity
 timeline (every status move, comment, the extracted change note and the
 approval, in order), the proposed edits as word-level diffs, and a footnote
-on how the run differs from production. Comments are reproduced exactly as
-recorded. The page is static: publish it with the Artifact tool.
+on how the run differs from production. Comments are reproduced as recorded,
+with three exceptions so nothing shows twice: the phase 2 / screenshots
+comments' per-screenshot lists become a pointer to Proposed edits (where each
+screenshot is shown with the same instructions), a 'UI facts confirmed' reply
+drops its copy of the list, and a writer's UI facts that a later set replaced
+collapse to one line. The comment files are unchanged. The page is static:
+publish it with the Artifact tool.
 
 Works on a run at any stage; whatever hasn't happened yet is left out.
 """
 import argparse
+import base64
 import difflib
+import io
 import html
 import json
 import re
@@ -61,6 +68,9 @@ def _cells(row):
     return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", row)]
 
 
+LONG_TABLE_ROWS = 15
+
+
 def render_markdown(text):
     """Paragraphs, bullet lists and pipe tables, with inline formatting."""
     blocks = re.split(r"\n\s*\n", (text or "").strip())
@@ -77,7 +87,11 @@ def render_markdown(text):
             for r in body:
                 t.append("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in r) + "</tr>")
             t.append("</tbody></table></div>")
-            out.append("".join(t))
+            table = "".join(t)
+            if len(body) > LONG_TABLE_ROWS:  # e.g. a 100-row plan: collapsed so the rail stays readable
+                table = (f'<details class="longtable"><summary>Show all {len(body)} rows</summary>'
+                         f'{table}</details>')
+            out.append(table)
         elif all(l.lstrip().startswith("- ") for l in lines):
             out.append("<ul>" + "".join(f"<li>{_inline(l.lstrip()[2:])}</li>" for l in lines) + "</ul>")
         else:
@@ -197,9 +211,55 @@ def _intake_card(ev, note):
     return f'<div class="comment agent note-card"><dl>{body}</dl></div>'
 
 
+# Blocks of the phase 2 / screenshots comment that list each screenshot to
+# act on. The page shows every one of them, with its instructions, under
+# Proposed edits, so in the activity rail they become one pointer line.
+_SHOT_LIST_HEADS = ("**Replaced from another article**", "**To retake.**", "**To check in the product**")
+_SHOT_LIST_END = "When the retakes are saved"
+_SHOT_POINTER = ("Each screenshot to retake, check or confirm is shown under **Proposed edits** below, "
+                 "with its instructions.")
+
+
+def _without_shot_lists(body):
+    """The comment without its per-screenshot lists, plus one pointer line
+    where they were. The comment file itself is unchanged."""
+    out, skipping, pointed = [], False, False
+    for line in body.split("\n"):
+        if line.startswith(_SHOT_LIST_HEADS):
+            skipping = True
+            if not pointed:
+                out += [_SHOT_POINTER, ""]
+                pointed = True
+            continue
+        if skipping:
+            if line.startswith(_SHOT_LIST_END):
+                skipping = False
+                continue
+            if line.startswith("**"):  # the next section of the comment
+                skipping = False
+            else:
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _fact_list_dropped(body):
+    """A 'UI facts confirmed' comment without its copy of the list (the
+    writer's comment just above it has the list)."""
+    head = body.split("\n", 1)[0].rstrip(":")
+    if head.endswith("against these UI facts"):
+        head = head[: -len("these UI facts")] + "the UI facts above."
+    return head
+
+
 def build_activity(rd, tk, log, note):
     writer = tk.get("assignee") or "Writer"
     items = []
+    # Only the writer's LATEST UI facts are shown in full: an earlier set,
+    # and its confirmation, collapse to one line.
+    facts_events = [i for i, ev in enumerate(log)
+                    if ev["kind"] == "comment" and ev.get("label") == "UI facts" and ev.get("actor") == "writer"]
+    latest_facts = facts_events[-1] if facts_events else None
     for i, ev in enumerate(log):
         kind, when = ev["kind"], _when(ev.get("t"))
         if kind == "created":
@@ -227,8 +287,19 @@ def build_activity(rd, tk, log, note):
                 + (f'<p class="step-note">{esc(note_text)}</p>' if note_text else ""))
         elif kind == "comment":
             body = (rd / "out" / ev["file"]).read_text()
-            actor = ev.get("actor", "agent")
-            items.append(_who(actor, writer, when, f"<span>commented · {esc(ev.get('label', ''))}</span>")
+            actor, label = ev.get("actor", "agent"), ev.get("label", "")
+            superseded = latest_facts is not None and i < latest_facts
+            if label == "UI facts" and actor == "writer" and superseded:
+                items.append(_who(actor, writer, when, "<span>set the UI facts</span>")
+                             + '<p class="step-note">Replaced by a later version, below.</p>')
+                continue
+            if label == "UI facts confirmed":
+                if superseded:
+                    continue
+                body = _fact_list_dropped(body)
+            elif label in ("drafts ready", "screenshots updated"):
+                body = _without_shot_lists(body)
+            items.append(_who(actor, writer, when, f"<span>commented · {esc(label)}</span>")
                          + f'<div class="comment {"human" if actor == "writer" else "agent"}">'
                            f'{render_markdown(body)}</div>')
         elif kind == "intake" and note:
@@ -237,34 +308,114 @@ def build_activity(rd, tk, log, note):
     return "\n".join(f'          <li class="ev">{x}</li>' for x in items)
 
 
+SHOT_LABELS = {"retake": "To retake", "unsure": "To check", "reused": "Replaced from another article",
+               "replaced": "Replaced with your retake", "kept": "Kept as it is"}
+THUMB_SIDE = 420
+
+
+def _thumb(path):
+    """A small JPEG of a local image as a data: URI, so the page carries its
+    own screenshots (Document360's image links expire within minutes)."""
+    try:
+        from PIL import Image
+
+        im = Image.open(path).convert("RGB")
+        im.thumbnail((THUMB_SIDE, THUMB_SIDE))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=78)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return ""
+
+
+def _figure(path, caption):
+    uri = _thumb(path) if path and Path(path).exists() else ""
+    if not uri:
+        return f'<figure><div class="empty">{esc(caption)}</div></figure>'
+    return f'<figure><img src="{uri}" alt="{esc(caption)}"><figcaption>{esc(caption)}</figcaption></figure>'
+
+
+def build_screenshots(rd, r):
+    """The screenshot rows for one article: every image that isn't simply
+    fine, old next to new."""
+    imgs = r.get("images")
+    if not imgs:
+        if r.get("images_error"):
+            return f'<p class="why">⚠ The screenshot check failed: {esc(r["images_error"][:200])}</p>'
+        return ""
+    out_dir = rd / "out"
+    items = [i for i in imgs["items"] if i["status"] != "fine"]
+    fine = sum(1 for i in imgs["items"] if i["status"] == "fine")
+    rows = []
+    for i in items:
+        old = _figure(out_dir / i["file"] if i.get("file") else None, f"Image {i['n']} now")
+        if i["status"] == "reused":
+            u = i["reuse"]
+            new = _figure(out_dir / u["file"] if u.get("file") else None,
+                          f"Image {u.get('image_n') or '?'} from {u.get('title') or 'another article'}")
+            what = (u.get("reason") or "") + f" To undo it, reply reject {r['n']}:{i['n']}."
+        elif i["status"] == "replaced":
+            new = _figure(rd / i["new_file"] if i.get("new_file") else None, "Your retake")
+            what = i.get("retake") or i.get("reason") or ""
+        elif i["status"] == "retake":
+            ref = i.get("reference")
+            new = (_figure(out_dir / ref["file"] if ref.get("file") else None,
+                           f"Close match: image {ref.get('image_n') or '?'} from {ref.get('title')}")
+                   if ref else f'<figure><div class="empty">Save the retake as screenshots/{r["n"]}/'
+                               f'{i["n"]:03d}.png</div></figure>')
+            what = (i.get("retake") or i.get("reason") or "")
+            what += f" Save it as screenshots/{r['n']}/{i['n']:03d}.png."
+            if i.get("retake_problem"):
+                what += f" ⚠ Last attempt: {i['retake_problem']}"
+        else:
+            new = '<figure><div class="empty">Check this in the product</div></figure>'
+            what = ((i.get("reason") or "") + f" If it's fine as it is, reply fine {r['n']}:{i['n']}; if not, "
+                    f"save a retake as screenshots/{r['n']}/{i['n']:03d}.png.")
+        label = SHOT_LABELS.get(i["status"], i["status"])
+        rows.append(f'<div class="shot">{old}{new}<p class="what"><span class="outcome {esc(i["status"])}">'
+                    f'{esc(label)}</span> {esc(what)}</p></div>')
+    head = f"Screenshots: {imgs['reviewed']} checked, {fine} fine"
+    if not rows:
+        return f'<p class="why">{esc(head)}.</p>'
+    return (f'<details open><summary>{esc(head)}, {len(rows)} need attention</summary>'
+            f'<div class="shots">{"".join(rows)}</div></details>')
+
+
 def build_edits(rd, results, plan):
-    rows = sorted((r for r in results.get("articles", {}).values() if r.get("after")), key=lambda r: r["n"])
+    rows = sorted((r for r in results.get("articles", {}).values()
+                   if r.get("after") or r.get("images") or r.get("images_error")), key=lambda r: r["n"])
     if not rows:
         return ""
     labels = {"merge_conflict": ("Needs a manual merge", "merge"), "draft_written": ("Draft written", "written"),
-              "draft_saved": ("Draft saved locally", "saved")}
+              "draft_saved": ("Draft saved locally", "saved"), "no_edit": ("No edit needed", "saved"),
+              "screenshots_pending": ("Screenshots to retake", "merge")}
     out = ['      <section>', '        <p class="label">Proposed edits</p>']
     for r in rows:
-        before = (rd / "out" / r["before"]).read_text() if r.get("before") else ""
-        after = (rd / "out" / r["after"]).read_text()
-        diff, changed = render_diff(before, after)
+        if r.get("after"):
+            before = (rd / "out" / r["before"]).read_text() if r.get("before") else ""
+            after = (rd / "out" / r["after"]).read_text()
+            diff, changed = render_diff(before, after)
+        else:
+            diff, changed = "", 0
         label, cls = labels.get(r["outcome"], (r["outcome"], "saved"))
         where = ""
         if r.get("target_link"):
             where = f' · <a href="{esc(r["target_link"])}" target="_blank" rel="noopener">open the Archived draft</a>'
+        conf = f'<span class="chip">{esc(r["confidence"])} confidence</span>' if r.get("confidence") else ""
+        text = ""
+        if diff:
+            text = ('<details open><summary>Before → after, visible text only</summary>\n'
+                    f'            <div class="diff">\n{diff}\n            </div>\n          </details>')
         warn = ""
         if r.get("warnings"):
             warn = f'<p class="why">⚠ {esc("; ".join(r["warnings"]))}</p>'
         out.append(f"""        <article class="edit">
           <div class="head"><h2>#{r['n']} {esc(r['title'])}</h2><span class="outcome {cls}">{esc(label)}</span></div>
-          <div class="chips"><span class="chip">{esc(r.get('workspace') or '')}</span><span class="chip">{esc(r.get('confidence') or '?')} confidence</span><span class="chip">{changed} line(s) changed</span></div>
+          <div class="chips"><span class="chip">{esc(r.get('workspace') or '')}</span>{conf}<span class="chip">{changed} line(s) changed</span></div>
           <p class="why">{esc(r.get('rationale') or '')}{where}</p>
           {warn}
-          <details open><summary>Before → after, visible text only</summary>
-            <div class="diff">
-{diff}
-            </div>
-          </details>
+          {text}
+          {build_screenshots(rd, r)}
         </article>""")
     out.append("      </section>")
     return "\n".join(out)
@@ -286,7 +437,8 @@ def build_details(tk, note, plan, approved, results):
     arts = list((results or {}).get("articles", {}).values())
     if arts:
         names = {"draft_written": "draft written", "draft_saved": "draft saved", "no_edit": "no edit needed",
-                 "merge_conflict": "manual merge", "failed": "failed"}
+                 "screenshots_pending": "screenshots to retake", "merge_conflict": "manual merge",
+                 "failed": "failed"}
         counts = {k: sum(1 for r in arts if r["outcome"] == k) for k in names}
         rows.append(("Result", ", ".join(f"{v} {names[k]}" for k, v in counts.items() if v)))
     path = [ticket.TO_DO, ticket.IN_DRAFT, ticket.PEER_REVIEW, ticket.FOR_REVIEW]

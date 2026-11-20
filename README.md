@@ -29,7 +29,8 @@ pip install -r requirements.txt
 ```
 
 See [`doc_sync/README.md`](doc_sync/README.md) for required environment
-variables and how to run the pipeline.
+variables and how to run the pipeline. Testing it for the first time? Start
+with [`TESTING.md`](TESTING.md).
 
 ## Note
 
